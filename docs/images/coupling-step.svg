@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 380" width="960" height="380" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+  <title id="t">What passes between ERF and a fire engine each step</title>
+  <desc id="d">ERF hands the engine the atmospheric state. The engine advances and returns heat fluxes on the fire grid. ERF averages them onto columns, holds them one step and injects them at every Runge-Kutta stage of the next step.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#475569"/></marker>
+  </defs>
+  <rect width="960" height="380" rx="14" fill="#ffffff"/>
+
+  <rect x="24" y="20" width="430" height="340" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="44" y="50" font-size="18" font-weight="700" fill="#1e3a8a">ERF: fire coupling</text>
+
+  <rect x="44" y="68" width="390" height="76" rx="8" fill="#bfdbfe" stroke="#1d4ed8"/>
+  <text x="60" y="95" font-size="15" font-weight="700" fill="#1e3a8a">1. Hand over the state</text>
+  <text x="60" y="119" font-size="13.5" fill="#1e3a8a">Wind, heights, near-surface air, precipitation</text>
+
+  <rect x="44" y="172" width="390" height="76" rx="8" fill="#bfdbfe" stroke="#1d4ed8"/>
+  <text x="60" y="199" font-size="15" font-weight="700" fill="#1e3a8a">4. Average onto columns, hold one step</text>
+  <text x="60" y="223" font-size="13.5" fill="#1e3a8a">The held heat is saved in the checkpoint</text>
+
+  <rect x="44" y="266" width="390" height="76" rx="8" fill="#bfdbfe" stroke="#1d4ed8"/>
+  <text x="60" y="293" font-size="15" font-weight="700" fill="#1e3a8a">5. Inject during the next step</text>
+  <text x="60" y="317" font-size="13.5" fill="#1e3a8a">Heat, vapour, smoke at every Runge-Kutta stage</text>
+
+  <rect x="620" y="20" width="316" height="340" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="640" y="50" font-size="18" font-weight="700" fill="#7c2d12">Fire engine</text>
+
+  <rect x="640" y="68" width="276" height="76" rx="8" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="656" y="95" font-size="15" font-weight="700" fill="#7c2d12">2. advance</text>
+  <text x="656" y="119" font-size="13.5" fill="#7c2d12">Spread the fire over one step</text>
+
+  <rect x="640" y="172" width="276" height="76" rx="8" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="656" y="199" font-size="15" font-weight="700" fill="#7c2d12">3. fill_fluxes</text>
+  <text x="656" y="223" font-size="13.5" fill="#7c2d12">Time-mean heat fluxes [W/m²]</text>
+
+  <path d="M434 106 H640" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <text x="537" y="96" font-size="13" text-anchor="middle" fill="#334155">FireForcing</text>
+  <path d="M778 144 V172" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <path d="M640 210 H434" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <text x="537" y="200" font-size="13" text-anchor="middle" fill="#334155">FireFluxes</text>
+  <path d="M239 248 V266" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#a)"/>
+</svg>
