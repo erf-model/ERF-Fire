@@ -9,6 +9,8 @@ The repository includes the fire engine and a pinned upstream ERF submodule.
 See the [LSFIRE user documentation](https://github.com/erf-model/LSFIRE/blob/main/docs/README.md)
 for build instructions, a quick start, and input options.
 
+![How LSFIRE connects to ERF](images/lsfire-integration.svg)
+
 ## How LSFIRE maps to ERF
 
 | Coupling item | In LSFIRE |
