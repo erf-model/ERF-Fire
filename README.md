@@ -16,12 +16,18 @@ through one interface, and ERF needs no change to add one.
 
 ![What is inside each repository](docs/images/what-is-where.svg)
 
+A fire engine can also be integrated using a pinned ERF Git submodule.
+
+![How LSFIRE connects to ERF](docs/images/lsfire-integration.svg)
+
 ## Documentation
 
 - [The fire coupling in ERF](docs/fire-coupling-in-erf.md): what moved into ERF,
   how to build it, its inputs, and what an engine must provide.
 - [FLARE](docs/flare.md): the engine, and what the FLARE repository holds that is
   not part of the engine.
+- [LSFIRE](docs/lsfire.md): the level-set engine, its ERF adapter, repository
+  layout, and coupled test cases.
 - [Tutorials](docs/tutorials.md): placeholder; the tutorials are not written yet.
 
 ## Fire models
@@ -29,6 +35,7 @@ through one interface, and ERF needs no change to add one.
 | Model | Repository | Selected with |
 |---|---|---|
 | FLARE (Fire-Line Advancement and Reaction Engine) | [erf-model/FLARE](https://github.com/erf-model/FLARE) | `erf.fire.engine = flare` |
+| LSFIRE (level-set wildland fire spread model) | [erf-model/LSFIRE](https://github.com/erf-model/LSFIRE) | `erf.fire.engine = lsfire` |
 
 Each model's team maintains the description of its own model.
 
