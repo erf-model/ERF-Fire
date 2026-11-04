@@ -16,6 +16,8 @@ through one interface, and ERF needs no change to add one.
 
 ![What is inside each repository](docs/images/what-is-where.svg)
 
+A fire engine can also be integrated using a pinned ERF Git submodule, as shown by LSFIRE below.
+
 ![How LSFIRE connects to ERF](docs/images/lsfire-integration.svg)
 
 ## Documentation
