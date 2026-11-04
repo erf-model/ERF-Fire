@@ -16,6 +16,10 @@ through one interface, and ERF needs no change to add one.
 
 ![What is inside each repository](docs/images/what-is-where.svg)
 
+## LSFIRE integration with ERF as a submodule
+
+![How LSFIRE connects to ERF](docs/images/lsfire-integration.svg)
+
 ## Documentation
 
 - [The fire coupling in ERF](docs/fire-coupling-in-erf.md): what moved into ERF,
