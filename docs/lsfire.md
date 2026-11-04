@@ -71,7 +71,7 @@ the engine's model inputs remain under `fire.*` and `fire_amr.*`.
 | Item | Where | Purpose |
 |---|---|---|
 | ERF | `ERF/` | Pinned upstream submodule containing the atmosphere and shared fire coupling |
-| Build scripts | `Build/` | CPU/MPI CMake build and a Perlmutter environment setup |
+| Build scripts | `Build/` | CMake build script and a Perlmutter environment setup |
 | Coupled cases and tools | `Exec/RegTests/LSFIRE/` | Input files, fuel table, plotfile reader, and heat-feedback budget checker |
 
 The build script enables NetCDF. The Perlmutter environment script is specific
@@ -80,7 +80,7 @@ to that machine; other systems need their own compiler and dependency setup.
 ## Coupled regression tests
 
 The [coupled-test README](https://github.com/erf-model/LSFIRE/blob/main/Exec/RegTests/LSFIRE/README.md)
-records CPU reference comparisons with one MPI rank:
+records reference comparisons with one MPI rank:
 
 | Case | What it checks |
 |---|---|
