@@ -24,13 +24,14 @@ A fire engine can also be integrated using a pinned ERF Git submodule.
 
 The documentation is published at
 [erf-model.github.io/ERF-Fire](https://erf-model.github.io/ERF-Fire/). It is built
-with Sphinx from the Markdown pages in `docs/`, so the same pages also read on
+with Sphinx from the pages in `docs/`. The Markdown pages below also read on
 GitHub:
 
-- [The fire coupling in ERF](docs/fire-coupling-in-erf.md): what moved into ERF,
-  how to build it, its inputs, and what an engine must provide.
+- [Fire–Atmosphere Coupling in ERF](docs/fire-coupling-in-erf.md): the coupling
+  components in ERF, how to build them, their inputs, and what an engine must provide.
 - [FLARE](docs/flare.md): the engine, and what the FLARE repository holds that is
-  not part of the engine.
+  not part of the engine. The FLARE model documentation and its inputs, copied
+  from the FLARE repository, are on the published site under FLARE.
 - [LSFIRE](docs/lsfire.md): the level-set engine, its ERF adapter, repository
   layout, and coupled test cases.
 - [Tutorials](docs/tutorials.md): placeholder; the tutorials are not written yet.

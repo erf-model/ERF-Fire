@@ -1,0 +1,427 @@
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/Fire.rst at 39e777bcc by
+.. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
+
+.. role:: cpp(code)
+   :language: c++
+
+.. _sec:Fire:
+
+Fire Model
+==========
+
+.. note::
+
+   This section is copied from the `FLARE documentation <https://github.com/erf-model/FLARE/blob/development/Docs/sphinx_doc>`__ at commit
+   ``39e777bcc``. File paths such as ``FireEngine/`` and ``Exec/`` refer to the FLARE repository.
+
+Overview
+--------
+
+FLARE (Fire-Line Advancement and Reaction Engine) simulates a surface wildfire on a two-dimensional fire grid that sits
+on one level of the atmosphere's mesh, the finest by default, and is refined by
+an integer factor in each horizontal direction. The atmosphere supplies wind, near-surface temperature
+and humidity; the fire model returns a surface heat flux, an optional latent
+flux and an optional smoke tracer. Terrain enters through slopes on the fire
+grid and through the height above ground at which the wind is sampled.
+
+The model is built from independently selectable pieces:
+
+- a **rate-of-spread model** that fills the field ``fire_ros`` from the local
+  wind, slope, fuel and moisture (Rothermel, BEHAVE, MacArthur, Cheney-Gould,
+  Balbi, or a per-cell hybrid of two of them), see :ref:`sec:ROS_Models`;
+- a **front propagation method** that advances the burned region at that
+  rate, either the FARSITE Lagrangian marker scheme or a level-set solver, see
+  :ref:`sec:FirePropagation`;
+- **fuel**, either one Anderson model everywhere or a spatial fuel map with
+  firebreaks, and a dead-fuel moisture model driven by the atmosphere, see
+  :ref:`sec:SpatialFuel` and :ref:`sec:FireFuelMoisture`;
+- a **non-burnable mask** from building footprints, listed fuel codes and
+  firebreaks, which the fire goes around, see :ref:`sec:FirePropagation`;
+- **ignition**, a disc, a polygon or polyline perimeter, or a timed schedule
+  of events, see :ref:`sec:MultiIgnition`;
+- **coupling** to the atmosphere through wind extraction and heat injection,
+  see :ref:`sec:FireCoupling`;
+- optional **behaviour extensions**: startup acceleration, ember spotting and
+  crown fire, see :ref:`fire_acceleration` and :ref:`sec:FireSpottingCrown`;
+- **diagnostics and output**: fireline intensity, flame length, flame
+  temperature and tilt, fire plotfiles, a statistics CSV, arrival-time probes
+  and checkpoint state, see :ref:`sec:FireOutput`.
+
+Every option is off, or set to its historical behaviour, by default. A deck
+that sets only ``erf.fire.enable``, a fuel model and an ignition runs
+Rothermel on the FARSITE path with static moisture and lagged heat coupling.
+The complete list of inputs with defaults is in :ref:`sec:FireInputs`, and
+``Exec/CanonicalTests/Fire/inputs_fire_master_reference`` carries every input
+with a comment as a reference deck.
+
+.. toctree::
+   :maxdepth: 1
+
+   fire_propagation
+   ros_models
+   Fire_FuelMoisture
+   spatial_fuel
+   multi_ignition
+   fire_suppression
+   fire_coupling
+   wui_validation
+   wui_structure_ignition
+   line_fire_verification
+   fire_verification
+   fire_acceleration
+   fire_spotting_crown
+   fire_output
+
+.. _sec:FireGrid:
+
+Fire grid
+---------
+
+The fire grid refines one level of the atmospheric mesh, chosen by
+:cpp:`erf.fire.anchor_level`: the finest level at start-up when the input is
+unset, so a single-level run puts it on level 0. It is built from that level's
+box array and distribution map by refining both by ``erf.fire.grid_ratio`` in
+x and y and collapsing z to one cell, so every fire box lives on the rank that
+owns its parent atmosphere box. The fire grid covers the region the level's
+boxes cover: the whole domain on level 0, the refined region on a finer level.
+Its index space starts at zero at the lower corner of that region, so with a
+grid ratio :math:`C` and the region's lower corner at column
+:math:`(i_0, j_0)` of its level, fire cell :math:`(i, j)` lies in the
+atmospheric column :math:`(\lfloor i/C \rfloor + i_0, \lfloor j/C \rfloor + j_0)`.
+
+The constraints on the fire grid's level:
+
+- the x and y lengths of every box on that level must be divisible by the
+  ratio; the run stops at start-up naming the first box that is not. Let
+  :math:`n` be the level's cell count in x or y (on a refined level, the
+  refinement region's extent in that level's cells, with that level's
+  ``amr.max_grid_size`` and ``amr.blocking_factor``), and make it a multiple
+  of the ratio. AMReX accepts only power-of-2 blocking factors:
+
+  - for a ratio that is a power of 2, set ``amr.blocking_factor_x`` and
+    ``amr.blocking_factor_y`` to a multiple of it, with ``amr.max_grid_size``
+    a multiple of it too;
+  - for any other ratio (the default 5, or 3 or 10), set the blocking factor
+    to 1 and ``amr.max_grid_size`` to a multiple of the ratio that divides
+    :math:`n`. With blocking factor 1 AMReX cuts a length of :math:`n` cells
+    into the fewest near-equal pieces no longer than ``max_grid_size`` (20
+    cells with ``amr.max_grid_size = 8`` become 7 + 7 + 6; 40 cells with
+    ``amr.max_grid_size = 20`` become 20 + 20), and cuts them further when
+    there are more ranks than boxes, so use at least as many boxes as ranks.
+    One box works on one rank.
+
+  With more than one rank, keep ``amr.max_grid_size`` below :math:`n` in x
+  or y on level 0: when it covers the whole domain in both, ERF replaces
+  AMReX's boxes with one box per rank, cut whatever the blocking factor (20
+  cells on 2 ranks become two boxes of 10);
+- no box on that level may be split in z (``amr.max_grid_size_z`` at least
+  the number of vertical cells), and a refinement box must reach the domain
+  top, since the fire model interpolates through whole columns;
+- above level 0, the level's boxes must cover one rectangle (one refinement
+  box), the refinement must not change during the run (``erf.regrid_int =
+  -1``), and the dust layer must be off, since it and the fire-dust coupling
+  run on level 0.
+
+A deck that breaks one of these stops at start-up with a message naming the
+input to change.
+
+The fire takes one step per time step of its level. On level 1 of a run with
+``amr.ref_ratio_vect = 2 2 1`` it steps twice per level-0 step, reads that
+level's wind, temperature and humidity, and puts its heat, moisture and smoke
+into that level's source; coarser levels receive them through average-down
+(:ref:`sec:FireCoupling`). A level finer than the fire's never sees the fire,
+and with two-way coupling its average-down replaces the heated cells under it,
+so the coupling prints a warning at start-up, with the share of the fire grid a finer
+level covers, whenever :cpp:`erf.fire.anchor_level` is not the finest level.
+The fire state is checkpointed under that level's directory together with the
+level and the region's corner, and a restart that would put the fire grid on
+another level or region stops with a message.
+
+Nothing outside the fire grid burns. On a refined level the edges of the
+refined region are the fire grid's edges, where the front stops; the reach
+estimate and the guard band of :ref:`sec:FireGridEdge` report a fire that gets
+there.
+
+Coordinates on the fire grid are the physical x and y of the atmosphere
+domain, so ignition points, probes, firebreaks and structure files are all
+given in metres. A raster placed by cell index, the fuel map
+(``erf.fire.fuel_map.file``), must have one entry per cell of the fire grid,
+starting at the region's lower corner; the terrain and structure files are
+sampled by position and may extend beyond the region.
+
+The fire model also requires a surface layer at the bottom boundary,
+``zlo.type = "surface_layer"``. The fire layer is set up together with the
+surface layer, and the near-surface potential temperature it samples each step
+is only kept on that path. The surface layer in turn needs a diffusion choice
+other than ``None`` (``erf.molec_diff_type``, ``erf.les_type``, a RANS or a
+PBL model); ``erf.molec_diff_type = "ConstantAlpha"`` with zero coefficients
+is enough when no diffusion is wanted. A deck with any other bottom boundary
+aborts at start-up with a message saying so.
+
+One fire step
+-------------
+
+The coupling layer (``FireCoupler::advance``, :ref:`sec:FireCoupling`)
+calls the native engine's ``FireLayer::advance`` once per time step of the
+fire grid's level, after that level's dynamical core, and hands it the
+atmospheric state. In order the engine:
+
+1. samples the near-surface temperature and relative humidity and, when
+   ``erf.fire.moisture_dynamic`` is on, advances the dead-fuel moisture
+   classes (:ref:`sec:FireFuelMoisture`);
+2. extracts the wind at the reference height above ground on the fire grid,
+   applies the wind adjustment factor and any terrain correction
+   (:ref:`sec:FireCoupling`);
+3. applies any scheduled ignitions due in this step;
+4. evaluates the selected rate-of-spread model into ``fire_ros``, blends at
+   fuel boundaries, and applies the acceleration and crown-fire adjustments
+   when enabled;
+5. propagates the front with CFL-limited subcycles of the FARSITE or
+   level-set scheme, reinitialising the level set periodically, and applies
+   ember spotting when enabled;
+6. updates the arrival-time field, consumes fuel and computes the surface
+   heat flux and the flame diagnostics;
+7. reports probes and appends the statistics CSV.
+
+With lagged or synchronous coupling, or with the smoke tracer, the coupling
+layer then averages the step's heat flux onto the atmospheric columns and
+holds it for the next step's heat injection (lagged and synchronous coupling)
+and smoke source.
+
+The level set ``fire_phi`` is normalised: it is :math:`-1` well inside the
+burned region, :math:`+1` well outside, zero on the front, and varies
+linearly between them over a band a few fire cells wide. Cells with
+:math:`\phi < 0` are burning or burned; ``fire_arrival_time`` records when
+each cell first crossed zero and is :math:`-1` where it has not.
+
+Fields on the fire grid
+-----------------------
+
+The principal state and diagnostic fields, all cell-centred on the fire grid:
+
+.. list-table::
+   :widths: 26 10 64
+   :header-rows: 1
+
+   * - Field
+     - Comp.
+     - Meaning
+   * - ``fire_phi``
+     - 1
+     - Normalised level set, negative where burned
+   * - ``fire_arrival_time``
+     - 1
+     - Time a cell first burned [s], :math:`-1` if unburned
+   * - ``fire_ros``
+     - 1
+     - Isotropic (head-fire) rate of spread [m/s]
+   * - ``fire_wind_ref``, ``fire_wind_eff``
+     - 2 each
+     - Wind at the reference height, and after WAF and terrain corrections [m/s]
+   * - ``fire_wind_extract_z``
+     - 1
+     - Height at which the wind was sampled [m]
+   * - ``fire_slopes``, ``fire_curvature``
+     - 2, 1
+     - Terrain slope components and curvature on the fire grid
+   * - ``fire_fuel_load``
+     - 1
+     - Remaining fuel load [kg/m²]
+   * - ``fire_fuel_mc``
+     - 5
+     - Dead 1-, 10-, 100-hour and live herbaceous and woody moisture [fraction]
+   * - ``fire_fuel_model``
+     - 1
+     - Fuel code per cell, present only with a spatial fuel map
+   * - ``fire_surface_temp``, ``fire_surface_rh``
+     - 1 each
+     - Near-surface temperature [K] and relative humidity [0-1] from the atmosphere
+   * - ``fire_heat_flux``, ``fire_latent_flux``
+     - 1 each
+     - Sensible and latent surface flux [W/m²]
+   * - ``fire_fireline_intensity``, ``fire_heat_release``, ``fire_flame_length``, ``fire_flame_temp``, ``fire_flame_tilt``
+     - 1 each
+     - Byram intensity :math:`h w_0 R` [kW/m], heat release :math:`h (w_0 - w) R` [kW/m], Thomas flame length [m], flame temperature [K], tilt [deg] (with ``erf.fire.compute_flame_tilt``)
+   * - ``fire_ros_weight``, ``fire_structure_height``
+     - 1 each
+     - Hybrid model weight and sampled building height, present with the hybrid model or structures
+   * - ``fire_nonburnable``
+     - 1
+     - Non-burnable mask, present when structures, non-burnable fuel codes, masked firebreaks or suppression are configured
+   * - ``fire_suppression_mask``, ``fire_ros_factor``, ``fire_line_progress``
+     - 1 each
+     - Suppression cells, rate factor and line ordinal, present only with ``erf.fire.suppression.enable`` (:ref:`sec:FireSuppression`)
+   * - ``fire_crown_active``, ``fire_crown_load``, ``fire_crown_fraction_burned``
+     - 1 each
+     - Crown-fire state, present only with crown fire enabled
+   * - ``fire_albini_data``
+     - 4
+     - Spotting diagnostics, present only with spotting enabled
+
+Which of these reach the fire plotfile, and under what names, is listed in
+:ref:`sec:FireOutput`.
+
+Source layout
+-------------
+
+The fire sources are in two folders (:ref:`sec:FireCoupling`).
+``Source/FireCoupling`` holds the atmosphere side, shared by every fire
+engine: ``ERF_FireCoupler`` (the coupling and its call order),
+``ERF_FireEngine.H`` (the interface an engine implements),
+``ERF_FireEngineTemplate.H`` (declarations only: the starting point for a new engine),
+``ERF_FireCouplingParams.H`` (the coupling inputs), ``ERF_FireGrid``,
+``ERF_FirePrerequisites`` (the start-up checks of the mesh),
+``ERF_FireWindExtract`` and ``ERF_FireSurfaceHeight`` (the wind sampler and
+the ground of each column), ``ERF_FireUtils`` and ``ERF_FirePrecip`` (the
+near-surface temperature, humidity and rain), ``ERF_FireAtmCoupling`` (the
+area average and the heat injection) and ``ERF_FireSmokeEmission``.
+
+``FireEngine`` holds the native engine. Its entry points are
+``ERF_FireLayer.H`` and ``ERF_FireLayer.cpp`` (the ``FireLayer`` class that
+owns the fields and runs a step) and ``ERF_FireParams.H`` (every
+``erf.fire.*`` input, read once from ParmParse, including the coupling
+inputs it hands to the coupling layer). The remaining headers each
+hold one model or one stage of the step and are named for it:
+``ERF_Rothermel``, ``ERF_BalbiModel``, ``ERF_BehaveModel``,
+``ERF_MacArthurModel``, ``ERF_CheneyGouldModel``, ``ERF_DirectionalRos`` and
+``ERF_HybridRos`` for the rate of spread; ``ERF_FarsiteEllipse``,
+``ERF_LevelSetAdvection``, ``ERF_NumericalSchemes`` and ``ERF_Reinitialize``
+for propagation; ``ERF_FireWindAdjust``, ``ERF_FuelWindHeight`` and
+``ERF_TerrainSlope`` for the wind and terrain; ``ERF_FuelMoisture``,
+``ERF_MoistureExtinction``, ``ERF_FuelMap``, ``ERF_LcpReader``,
+``ERF_FuelBlending`` and ``ERF_FireBreak`` for fuel; ``ERF_FireIgnition``,
+``ERF_IgnitionSchedule`` and ``ERF_PolygonIgnition`` for ignition;
+``ERF_FireHeatFlux`` for the heat release; ``ERF_AlbiniSpotting``, ``ERF_ScottSpottingTable``,
+``ERF_CrownFire`` and ``ERF_FireAcceleration`` for the behaviour extensions;
+``ERF_FireEnginePrerequisites`` for its start-up checks;
+``ERF_FireDiagnostics``, ``ERF_FireStatsOutput``, ``ERF_FirePlotfile``
+and ``ERF_FirePlotfileCatalog`` for output; and ``ERF_FireCheckpoint`` for
+its checkpoint. The fire module is compiled when
+``ERF_ENABLE_FIRE`` is on, which is the CMake default.
+
+Tests
+-----
+
+``Exec/CanonicalTests/Fire`` holds the canonical fire cases, grouped by theme
+(verification, core physics, fire behaviour options, fire-atmosphere coupling,
+boundary layers, heat-flux diagnostics, the WUI subdivision, real terrain) with
+a README and a check script in every case directory, plus Python unit tests
+under ``Unit_Tests`` for the Rothermel kernel, the FARSITE ellipse, the ROS
+models, the fuel map reader, the ignition schedule, spotting, crown fire,
+acceleration, wind interpolation and terrain projection. The cases under
+``Verification`` compare with an exact or published answer and record the
+measured agreement (:ref:`sec:FireVerification`); the other canonical cases have
+no recorded reference values, so they are smoke tests: they show a feature runs
+and behaves qualitatively as documented.
+
+The regression suites under ``Exec/RegTests`` are the quantitative checks.
+Each is a directory of input decks sharing one base, a script that runs every
+deck and prints a table, and a README that records the reference values and
+explains what each row should show:
+
+- ``FireRosComparison``: every rate-of-spread model on the isotropic and
+  direction-dependent level-set paths, the hybrid selectors with their
+  identity checks, per-fuel Rothermel coefficients, the wind mapping, and the
+  Balbi wind-source and extinction options, all on one flat grass fire.
+- ``FireHybridObstacles``: the hybrid structure selector, arrival-time probes
+  and the interaction with immersed-forcing buildings.
+- ``FireRestart``: a checkpoint written mid-run and a restart from it, on both
+  propagation paths and with lagged heat coupling, which must reproduce the
+  uninterrupted run exactly.
+- ``FireHeatPlacement``: the fire tendency's source mode and the open-fraction
+  placement around buildings, with and without immersed-forcing buildings,
+  checked through the coupling's energy diagnostic.
+- ``FireNearWall``: the level-set wall extrapolation and the open-column wind
+  weights next to masked buildings, measured by the flank's arrival along a
+  wall against the unmasked reference.
+- ``FirePrescribed``: the prescribed rate of spread against a growing circle
+  and the prescribed heat flux against the coupling's energy diagnostic and the
+  atmosphere's heat budget.
+- ``FireLineFire``: the Coen et al. (2013) line fire, one-way against Rothermel
+  and coupled against the paper (:ref:`sec:LineFireVerification`).
+- ``FireExposure``: the per-structure exposure CSV (arrival and residence of
+  the front along each wall, peak intensity, heat load, embers) with and
+  without immersed-forcing buildings and with spotting.
+- ``FireBoundaryGuard``: the fire at the edge of the fire grid, the reach
+  estimate at ignition and the guard band's contact time in the statistics
+  CSV, with the abort action stopping a run on its first step.
+- ``FireAnchorLevel``: the fire grid on a refined level against a
+  single-level run at that level's resolution, the level-0 heat budget after
+  average-down (and the heat lost with the fire on the coarser level), a
+  restart, a restart with the MRF fire thermal excess on level 1, and the
+  start-up checks of :cpp:`erf.fire.anchor_level`.
+
+Where each feature is exercised:
+
+.. list-table::
+   :widths: 40 60
+   :header-rows: 1
+
+   * - Feature
+     - Test
+   * - Rothermel, BEHAVE, MacArthur, Cheney-Gould, Balbi 2009 and 2020
+     - ``FireRosComparison``; canonical ``Fire_Behavior/ROS_Models``, ``Core_Physics``
+   * - Direction-dependent level set, every model
+     - ``FireRosComparison`` (``*_directional`` rows)
+   * - Hybrid: region, fuel, wind selectors, blend width, directional, non-Balbi members
+     - ``FireRosComparison`` (``hybrid_*`` rows)
+   * - Hybrid: structure selector, probes, immersed-forcing buildings
+     - ``FireHybridObstacles``
+   * - Non-burnable mask: structures and fuel codes
+     - ``FireHybridObstacles`` (``*_mask`` rows), ``FireRosComparison`` (``rothermel_code0_*``)
+   * - Per-fuel Rothermel coefficients, spatial fuel map, blending, firebreaks
+     - ``FireRosComparison`` (``rothermel_fuelmap``, ``hybrid_fuel``); canonical ``Fire_Behavior/Spatial_Fuel``
+   * - Wind mapping (bilinear, nearest), per-fuel wind height, WAF formulas
+     - ``FireRosComparison`` (``rothermel_nearest``); canonical ``ROS_Models``, ``Core_Physics/Wind_Adjustment_Factor``; ``Unit_Tests/test_wind_interpolation.py``
+   * - Balbi couplings: reference wind, moisture extinction
+     - ``FireRosComparison`` (``balbi2020_reference_wind``, ``balbi2020_extinction_wet``)
+   * - FARSITE ellipse, level-set advection and reinitialisation
+     - ``FireRestart``; canonical ``Fire_Behavior/Elliptical_Propagation``, ``Verification/Level_Set_Advection``; ``Unit_Tests/test_farsite_ellipse.py``
+   * - Level-set geometry: masked obstacles, junctions, polygon corners, merging fronts, refraction at a fuel boundary, a spatially varying rate
+     - canonical ``Verification`` (``Obstacle_Shadow``, ``Junction_Fire``, ``Polygon_Growth``, ``Merging_Fires``, ``Fuel_Interface_Refraction``, ``Speed_Gradient``)
+   * - Prescribed rate of spread and prescribed heat flux
+     - ``FirePrescribed``; canonical ``Verification``
+   * - Checkpoint and restart of the fire state
+     - ``FireRestart``
+   * - Dynamic fuel moisture
+     - canonical ``Verification/Moisture_Relaxation``, ``Core_Physics/Fuel_Moisture_Sensitivity``, ``Fire_Behavior/ROS_Models/behave_dynamic``
+   * - Ignition schedule, polygon and polyline ignition
+     - canonical ``Fire_Behavior/Ignition_Patterns``; ``Unit_Tests/test_ignition_schedule.py``
+   * - Fires that meet: coalescing spot fires, a junction fire, parallel lines from several perimeter files
+     - ``FireMergingFronts``; canonical ``Fire_Behavior/Interacting_Fires``; gtest ``PolygonIgnition``
+   * - Startup acceleration
+     - canonical ``Fire_Behavior/Acceleration``; ``Unit_Tests/test_fire_acceleration.py``
+   * - Ember spotting, crown fire
+     - canonical ``Fire_Behavior/Spotting``, ``Fire_Behavior/Crown_Fire``; ``Unit_Tests/test_albini_spotting.py``, ``test_crown_fire.py``
+   * - Coupling modes, heat injection, smoke tracer
+     - canonical ``Fire_Atmosphere_Coupling``; ``FirePrescribed``
+   * - Additive source mode, open-fraction heat placement, fire heat with immersed-forcing buildings
+     - ``FireHeatPlacement``
+   * - Level-set wall extrapolation, open-column wind weights
+     - ``FireNearWall``
+   * - Structure exposure diagnostics, their checkpoint and restart
+     - ``FireExposure``; ``FireRestart`` (``exposure`` row)
+   * - Flame temperature, tilt, intensity
+     - canonical ``Heat_Flux_Diagnostics``
+   * - Terrain slopes and terrain wind corrections
+     - canonical ``Verification/Slope_No_Wind``, ``Core_Physics/ROS_Slope_Effects``, ``Terrain_Wind_Coupling``; ``Unit_Tests/test_terrain_projection.py``
+   * - The WUI features together: structure mask, wall extrapolation, open-column wind, exposure, spotting, immersed buildings with heat coupling
+     - canonical ``WUI_Subdivision`` (:ref:`sec:WUIValidation`)
+   * - The edge of the fire grid: reach estimate at ignition, boundary guard band (warn, abort)
+     - ``FireBoundaryGuard``; gtest ``ERF_GTestFireBoundaryGuard``
+   * - The fire grid on a refined level: region, maps to the atmosphere, front, heat budget, restart, start-up checks
+     - ``FireAnchorLevel``; gtest ``ERF_GTestFireAnchorLevel``
+
+The restart of the spotting and crown-fire state is covered by the
+``FireRestart`` case script (``Exec/RegTests/FireRestart/run_restart.sh``;
+the registered CTest runs its level-set deck only), and the probe and
+exposure report flags are checkpointed with it.
+The fire-dust coupling has its own cases under ``Exec/CanonicalTests/Hazard``
+(`sec:DustFire <https://github.com/erf-model/FLARE/blob/development/Docs/sphinx_doc/theory/dust_fire.rst>`__).
+
+References
+----------
+
+- Rothermel, R. C. (1972). A mathematical model for predicting fire spread in wildland fuels. USDA Forest Service Research Paper INT-115.
+- Finney, M. A. (2004). FARSITE: Fire Area Simulator model development and evaluation. USDA Forest Service Research Paper RMRS-RP-4 Revised.
+- Mandel, J., Beezley, J. D. and Kochanski, A. K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geoscientific Model Development, 4, 591-610.

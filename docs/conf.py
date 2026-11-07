@@ -10,9 +10,18 @@ project = "ERF-Fire"
 author = "The ERF developers"
 copyright = "2026, The ERF developers"
 
-extensions = ["myst_parser"]
+extensions = ["myst_parser", "sphinx.ext.intersphinx", "sphinx.ext.mathjax"]
 
-source_suffix = {".md": "markdown"}
+# The FLARE pages in docs/flare/ are reStructuredText copied from erf-model/FLARE
+# by tools/sync_flare_docs.py; the hand-written pages are Markdown.
+source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
+
+# A :ref: in the FLARE pages to an ERF section (for example sec:FireCoupling)
+# resolves against the ERF documentation.
+intersphinx_mapping = {"erf": ("https://erf.readthedocs.io/en/latest/", None)}
+
+# Numbered figures and tables, as in the ERF and FLARE documentation.
+numfig = True
 root_doc = "index"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
