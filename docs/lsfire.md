@@ -41,7 +41,7 @@ are retained implementation names; the registered engine name is `lsfire`.
 
 These are fire-model components. The atmospheric source placement, Exner
 conversion, and smoke injection belong to ERF's shared coupling, described in
-[The fire coupling in ERF](fire-coupling-in-erf.md).
+[Fire–Atmosphere Coupling in ERF](fire-coupling-in-erf.md).
 
 ## Wind and heat exchange
 
