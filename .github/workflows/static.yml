@@ -1,43 +1,57 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Build the Sphinx documentation in docs/ and deploy it to GitHub Pages.
+name: Deploy documentation to Pages
 
 on:
-  # Runs on pushes targeting the default branch
+  # Deploys on pushes to the default branch
   push:
     branches: ["main"]
-
+  # Builds (no deploy) on pull requests, so a page that breaks the build is seen
+  # before merge
+  pull_request:
+    branches: ["main"]
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
 # However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.event_name }}-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Sphinx
+        run: python3 -m pip install -r docs/requirements.txt
+      - name: Build the HTML pages (warnings are errors)
+        run: sphinx-build -W --keep-going -b html docs _build/html
+      - name: Upload artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _build/html
+
   deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          # Upload entire repository
-          path: '.'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
