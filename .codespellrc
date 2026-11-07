@@ -1,0 +1,5 @@
+[codespell]
+skip = .git,_build,*.svg,*.png
+# Fire-science terms in the FLARE pages: SAV (surface-area-to-volume ratio),
+# BUI (Buildup Index), retuned (re-tuned)
+ignore-words-list = sav,bui,retuned

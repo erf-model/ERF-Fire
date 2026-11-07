@@ -1,0 +1,468 @@
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_coupling.rst at 39e777bcc by
+.. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
+
+.. role:: cpp(code)
+   :language: c++
+
+.. _sec:FireCouplingNative:
+
+Fire-Atmosphere Coupling in the Native Engine
+=============================================
+
+The atmosphere drives the fire through the wind, and the fire drives the
+atmosphere through a surface heat flux. This page covers both directions:
+how the wind reaches the fire grid and is adjusted to the flame zone, how fuel
+is consumed and the heat flux formed, how that flux is injected into the
+energy equation, and the smoke tracer.
+
+Coupling layer and fire engines
+-------------------------------
+
+The code is split into two parts, so that more than one fire model can be
+coupled to ERF the same way.
+
+* **The coupling layer** (``Source/FireCoupling``, the ``FireCoupler`` class)
+  is everything on the atmosphere side. It checks that the mesh can carry a
+  fire grid, builds that grid on the level :cpp:`erf.fire.anchor_level`
+  selects and hands the fire the atmospheric state at the start of each of
+  its steps. With ``"lagged"`` or ``"synchronous"`` coupling it averages the
+  heat the fire reports onto the atmospheric columns, holds it for one step,
+  and injects it at every Runge-Kutta stage of the next step; with
+  :cpp:`erf.fire.smoke_enable` it injects the smoke tracer the same way, also
+  with ``"passive"`` coupling, which injects no heat. It also provides the shared
+  helpers a fire model may use: the wind sampler and the ground of each
+  column described below.
+* **The fire engine** (``FireEngine`` in ``ERF_FireEngine.H``) is the fire
+  model itself: it advances the front on the fire grid and reports, after
+  each step, the sensible and latent heat flux into the air on the fire grid
+  [W/m²], averaged over its step. It writes its own checkpoint and fire
+  plotfile, and offers the level set, the reference wind and the heat release
+  to the other surface models (the dust layer reads them). :cpp:`erf.fire.engine` selects it; the only
+  engine so far is ``"flare"``, FLARE (Fire-Line Advancement and Reaction
+  Engine; ``FireEngine``, the ``FireLayer`` class), which every other section of the fire pages
+  describes.
+
+The engine reads, at the start of each step, the face velocities of the fire
+grid's level (before the dynamical core with ``"passive"`` and ``"lagged"``
+coupling, after it with ``"synchronous"``), the cell-centre heights, the air
+temperature and relative humidity of the lowest cell before the dynamical
+core, and, when it asks for it, the surface precipitation of every column.
+What it does with them, including the height it samples the wind at and the
+corrections it applies to that wind, is the engine's choice. The coupling
+inputs (:cpp:`erf.fire.grid_ratio`, :cpp:`erf.fire.anchor_level`,
+:cpp:`erf.fire.coupling_type`, :cpp:`erf.fire.heat_flux_alfg`,
+:cpp:`erf.fire.fire_atm_feedback`, :cpp:`erf.fire.inject_latent`,
+:cpp:`erf.fire.source_mode`, :cpp:`erf.fire.heat_open_fraction`,
+:cpp:`erf.fire.heat_tendency_density`, :cpp:`erf.fire.heat_tendency_exner`,
+:cpp:`erf.fire.smoke_enable` and :cpp:`erf.fire.smoke_emission_factor`) mean
+the same for every engine, except that :cpp:`erf.fire.heat_open_fraction`
+needs the engine to report which part of each column its structures block;
+the native engine does, from its structure map.
+
+Adding a fire engine
+~~~~~~~~~~~~~~~~~~~~
+
+``Source/FireCoupling/ERF_FireEngineTemplate.H`` is the starting point for a
+new fire model. It declares every method a fire engine provides, each with a
+comment on what ERF hands it, what ERF expects back and when it is called. It
+holds declarations only: nothing in it has a body, no input selects it and
+nothing creates one, so it adds no code to a run. ``ERF_FireCoupler.cpp``
+checks at compile time that it declares every method ``FireEngine`` requires
+(the pure virtual ones), and ``override`` checks the signature of every method
+it declares; the optional methods are kept in it by hand.
+
+To add an engine:
+
+#. Copy the template into the new model's own folder, rename the class, and
+   write the method bodies in a ``.cpp`` file there. Delete the optional
+   methods the engine does not provide; their defaults then apply.
+#. Read the model's inputs under its own prefix (``erf.fire.<engine>.*``),
+   so they never mix with another engine's keys.
+#. Add the engine's name to the names :cpp:`erf.fire.engine` accepts (the
+   ``one_of`` check of ``engine`` in ``FireEngine/ERF_FireParams.H``), and a
+   branch that creates the engine to the selector in ``ERF::initializeFire``.
+#. Run the ``FireCoupler`` unit tests (``Tests/Unit/Fire/ERF_GTestFireCoupler.cpp``,
+   whose stand-in engine is the smallest engine that works) and the coupled
+   restart check ``Exec/RegTests/FireRestart/run_coupled_restart.sh``, passing
+   ``erf.fire.engine=<name>`` and the engine's own inputs after the executable
+   (``FireParams`` still parses and checks the deck's native-engine keys,
+   whichever engine runs).
+
+The engine owns its fire physics and its own state, including its checkpoint
+and plotfile; the coupling layer does the rest, as described above. The
+native engine (``FireEngine``, ``FireLayer``) is the complete example.
+
+Wind extraction
+---------------
+
+The rate-of-spread models take a midflame wind. It is built in three stages.
+
+**Sampling.** For each fire cell the atmospheric column of the fire grid's level is sampled at the
+reference height :cpp:`erf.fire.wind_ref_ht` (default 6.1 m) above the local
+ground. The ground is the mean of the four surface nodes of the atmospheric
+cell, taken from the atmospheric terrain even when
+:cpp:`erf.fire.terrain_file_name` supplies a finer terrain for the slopes,
+since the wind profile being interpolated belongs to that column. The
+face-staggered velocities are averaged to cell centres and interpolated
+linearly in height between the two cell centres that bracket the target.
+A target below the first cell centre takes the lowest centre's wind scaled
+by the neutral log profile :math:`\ln(z/z_0) / \ln(z_1/z_0)` of
+:cpp:`erf.fire.wind_sample_z0` (default 0.1 m), :math:`z_1` the centre's
+height above ground, with :cpp:`erf.fire.wind_below_first_cell = "log"`;
+the default ``"clamp"`` takes the centre's wind unchanged (a 6.1 m target
+under a 10 m first centre reads the 10 m wind, 12 % high at :math:`z_0` =
+0.1 m), kept as the default because 112 fire decks sample below their first
+centre and carry its numbers; ``log`` is the recommended setting whenever the
+first cell is above the reference height.
+With :cpp:`erf.fire.use_per_fuel_wind_ht` the height comes instead from a
+per-fuel table in the WRF-SFIRE ``fcwh`` convention (6.096 m for every fuel),
+with or without a fuel map.
+
+**Horizontal mapping.** :cpp:`erf.fire.wind_interp` selects how atmospheric
+columns map to the finer fire cells. ``"bilinear"`` (default) blends the four
+columns surrounding each fire cell, every one sampled at the reference height
+above *its own* ground, so a cell midway between columns gets the wind of that
+position. ``"nearest"`` takes only the column containing the cell, which makes
+the fire-grid wind piecewise constant on atmospheric cells with a full cell of
+shear at every block edge. The result is ``fire_wind_ref`` and the sampling
+height is ``fire_wind_extract_z``.
+
+Next to immersed-forcing buildings the columns inside a footprint carry the
+relaxed in-building velocity, and the bilinear blend hands a share of it to
+every fire cell within one atmospheric cell of the wall. With
+:cpp:`erf.fire.structures.wind_open_columns` each column's weight is
+multiplied by its open fraction (the part of the column not covered by
+non-burnable structure cells, from the structure heightmap) whenever its
+sampled roof is above the cell's wind height, and the four weights are
+renormalised, so the fire reads the wind of the open columns only. A cell
+whose four columns are all closed keeps the plain weights; it is inside a
+footprint and masked anyway. Off by default; needs
+:cpp:`erf.fire.structures.enable` and has no effect with ``"nearest"``.
+
+**Adjustment to the flame zone.** ``fire_wind_eff`` is the reference wind
+multiplied by the wind adjustment factor and modified by the terrain
+corrections:
+
+- The wind adjustment factor reduces the reference wind to the midflame
+  height of the fuel bed. :cpp:`erf.fire.waf_formula = "andrews"` (default)
+  uses the unsheltered logarithmic form of Andrews (2012) driven by the fuel
+  bed depth, and ``"behaviorplus"`` the linear BehavePlus form;
+  :cpp:`erf.fire.use_waf = false` passes the reference wind through. The
+  depth is the domain fuel model's on a uniform fuel and each cell's own
+  wherever a spatial fuel map is read, so on a map the factor is a field:
+  Anderson 1's 1 ft bed gives 0.362 and Anderson 13's 3 ft bed 0.459, a 27 %
+  difference in the midflame wind that the rate of spread carries. The Balbi
+  model can bypass the factor with
+  :cpp:`erf.fire.balbi.wind_source = "reference"`, since it normalises the
+  wind by its own vertical velocity scale.
+- The terrain wind factors (:cpp:`erf.fire.use_terrain_wind`, default
+  false since October 2026) scale and rotate the wind from the slope and
+  curvature on the fire grid: a ridge speed-up :cpp:`erf.fire.k_ridge`, lee
+  sheltering :cpp:`erf.fire.k_shelter`, valley channelling
+  :cpp:`erf.fire.k_valley` in concave terrain, and a deflection
+  :cpp:`erf.fire.k_deflect` of the wind vector toward the slope. They are
+  not FARSITE's (Finney 1998 has no such corrections), they step from 1 to
+  :math:`k_{ridge}` at a 2.9° slope, and they are stand-ins for flow that a
+  resolved atmosphere already contains; most decks switched them off, which
+  is now the default. Turn them on only with a wind that does not resolve the
+  terrain, and expect a discontinuity at the slope threshold.
+- The Rothermel and BEHAVE kernels additionally bound the effective wind by
+  Rothermel's (1972, eq. 87) limit :math:`U \le 0.9\, I_R` (ft/min, with
+  the reaction intensity in BTU/ft²/min) when :cpp:`erf.fire.use_wind_limit`
+  is true (default). The limit scales with the fuel's reaction intensity:
+  about 690 ft/min (3.5 m/s midflame) for Anderson 1 at 8 % moisture. The
+  fuel-class rule, 300 ft/min for fine fuels
+  (surface-area-to-volume ratio above 1000 ft⁻¹) and 500 ft/min otherwise,
+  which this code applied until October 2026 and which held every grass fire
+  above a 4.2 m/s reference wind at the 1.52 m/s rate, is kept as
+  :cpp:`erf.fire.wind_limit = "fuel_class"`. Wind-driven conflagrations may
+  exceed either bound; turn the limit off, or hand the high-wind regime to a
+  model without one through the hybrid ``wind`` selector.
+
+Coupling modes
+--------------
+
+:cpp:`erf.fire.coupling_type` selects which wind the fire sees and whether its
+heat returns to the atmosphere:
+
+- ``"passive"``: the fire spreads on the wind from the start of the step and
+  its heat flux is computed but never injected. Use it for fast screening runs
+  and for regression tests where the atmosphere should not respond.
+- ``"lagged"`` (default): the fire spreads on the wind from the start of the
+  step; the flux it produces is stored and injected during the next step's
+  Runge-Kutta stages. This one-step explicit lag is the WRF-SFIRE approach.
+- ``"synchronous"``: the fire spreads on the wind *after* the dynamical core
+  has advanced, so the spread at step :math:`n+1` already reflects the
+  momentum response to the heat injected from step :math:`n`; the flux still
+  enters at the next step.
+
+The fire runs once per atmospheric step in all three modes.
+
+Fuel consumption and heat flux
+------------------------------
+
+Once a cell has burned (:math:`\phi < 0`) its remaining fuel load
+:math:`w` decays exponentially with the cell residence time,
+
+.. math::
+
+   w_{n+1} = w_n\, e^{-\Delta t / \tau_{res}}, \qquad
+   \tau_{res} = \max\!\left(\frac{\Delta x_f}{R},\ \tau_{SAV}\right),
+
+where :math:`\Delta x_f / R` is the time the front takes to cross one fire
+cell and :math:`\tau_{SAV} = 301\,\rho_p/\sigma` (Rothermel 1983, seconds
+with :math:`\rho_p` in lb/ft³ and :math:`\sigma` in ft⁻¹) is the particle
+burnout time used as a floor. :cpp:`erf.fire.tau_residence_s` overrides the
+residence time with a fixed value when positive.
+
+That residence time ties the burnout to the front's speed, so a cell of
+timber litter releases its heat as fast as a cell of grass once the front has
+passed. WRF-SFIRE and the Community Fire Behavior Model instead give each
+fuel model a burn time (Mandel et al. 2011; Jiménez y Muñoz et al. 2026,
+Table 1: 7 s for the grasses, 180 s chaparral, 100 s the brush models,
+900 s timber litter and slash), turned into the e-folding time by dividing
+by 0.8514 so that 1000 s gives a 40% loss in ten minutes.
+:cpp:`erf.fire.burnout_model = "sfire"` uses that time in place of
+:math:`\tau_{res}`, regardless of the rate of spread; the table can be
+overridden with :cpp:`erf.fire.burnout_times_s` (13 values) and the divisor
+with :cpp:`erf.fire.burnout_time_to_efold`. The default, ``"residence"``,
+keeps the crossing time. The two release the same energy per cell, only
+spread differently in time: with the burn time, heavy fuels keep burning
+behind the front, which is what a plume driven by a long-lived fire needs
+and what the residence time cannot give. ``Exec/RegTests/FireBurnout``
+compares both on grass and on timber litter. The size-class post-frontal
+combustion of BURNUP (Albini and Reinhardt 1995), with its own load and
+burnout per particle size, is the fuller model and a later step.
+
+The sensible flux is the instantaneous power of that decay,
+
+.. math::
+
+   Q = \frac{w\, h}{\tau_{res}} \quad [\mathrm{W/m^2}],
+
+with :math:`h` the heat content of the fuel model. On a spatial fuel map both
+the initial load and :math:`h` are those of each cell's own fuel code. Byram
+intensity, flame length and the flame diagnostics are built from the same
+quantities (:ref:`sec:FireOutput`).
+
+The latent flux follows WRF-SFIRE,
+
+.. math::
+
+   Q_{lat} = \frac{L_v}{h}\,\bigl(b + (1 - b)\, f_w\bigr)\, Q, \qquad
+   b = \frac{M_f}{1 + M_f},\ f_w = 0.56,
+
+where :math:`M_f` is the fuel moisture and :math:`f_w` the water yield of
+combustion per unit dry fuel. WRF-SFIRE writes these weights for a wet-mass
+burn rate, of which the share :math:`b` is fuel water; :math:`Q/h` here is
+the oven-dry burn rate of the fuel models' loads, for which the water
+released per unit dry fuel is :math:`M_f + f_w`, so the flux above is lower
+than that by the factor :math:`1 + M_f` (8 % at 8 % moisture). The WRF form
+is kept so coupled results match WRF-SFIRE's.
+
+The Community Fire Behavior Model (Jiménez y Muñoz et al., 2026, their
+Eqs. 4 and 5) keeps this latent flux but hands the atmosphere only the
+dry-fuel share of the heat release,
+
+.. math::
+
+   Q_{sens} = f_{dry}\, Q, \qquad f_{dry} = \frac{1}{1 + M_f} = 1 - b,
+
+so that the sensible flux is 7% lower than :math:`Q` at the default 8%
+moisture and 23% lower at 30%. :cpp:`erf.fire.heat_flux_partition` selects
+the partition: ``"legacy"`` (default) injects the full :math:`Q`, the form
+FLARE has always used; ``"cfbm"`` applies :math:`f_{dry}`. Only the
+flux handed to the atmosphere changes: the fire-grid heat flux kept for the
+plotfiles, Byram intensity and flame diagnostics stays the unpartitioned
+release, and the latent flux is the same under both settings. The moisture
+in :math:`f_{dry}` is the one the latent flux uses, the deck's 1-h value or
+the load-weighted mean of the dynamic moisture map. Note that
+:math:`f_{dry}` is mass bookkeeping rather than an energy balance: the heat
+spent vaporising the fuel water is about :math:`M_f L_v` per unit dry fuel,
+roughly 1.5% of the heat content at 10% moisture, so the CFBM partition
+removes more heat than evaporation costs. The regression test
+``Exec/RegTests/FireFluxPartition`` runs both partitions side by side.
+
+Injection into the atmosphere
+-----------------------------
+
+The fire-grid fluxes are area-averaged onto the atmospheric columns of the fire grid's level and
+distributed vertically with an exponential profile,
+
+.. math::
+
+   H(z) = \frac{Q}{c_p}\, e^{-z/\alpha_g}, \qquad
+   \frac{\partial (\rho\theta)}{\partial t} = -\rho\, \frac{\partial H}{\partial z},
+
+where :math:`z` is height above the first cell centre of the column (the
+profile's datum, half a cell above the terrain, so the lowest cell takes the
+share :math:`1 - e^{-\Delta z_1/\alpha_g}` and nothing is lost below it) and
+:math:`\alpha_g` = :cpp:`erf.fire.heat_flux_alfg` (default 45 m) is the
+e-folding depth: 37% of the flux remains at 45 m and 1% at 225 m. The latent
+flux is distributed the same way into the vapour equation when
+:cpp:`erf.fire.inject_latent` is true and moisture is active.
+
+.. note::
+
+   Before 2026-09-03 the default tendency carried an extra density factor,
+   :math:`\partial(\rho\theta)/\partial t = -\rho\, \partial H/\partial z`
+   with :math:`H = Q/c_p`, so the heat it injects is :math:`\rho` times the
+   fire flux, about 10 to 15% too much at sea level. Heating gives
+   :math:`\partial(\rho\theta)/\partial t = -(1/c_p)\, \partial Q/\partial z`
+   with no density factor, and that is now the default;
+   :cpp:`erf.fire.heat_tendency_density = true` restores the historical form
+   for comparison with older coupled results. The energy diagnostic printed
+   with :cpp:`erf.fire.fire_debug` reads exactly
+   :math:`1 - e^{-z_{top}/\alpha_g}` with the default and about
+   :math:`\rho` times that with the historical form.
+
+   The tendency above is a :math:`\rho\theta` budget: heating :math:`q`
+   per unit volume gives :math:`\partial\theta/\partial t = q / (\rho c_p
+   \Pi)` with the Exner function :math:`\Pi = (p/p_0)^{R_d/c_p}`, so the
+   enthalpy :math:`c_p \Pi\, \partial(\rho\theta)/\partial t` the column
+   receives is :math:`\Pi` times the flux, 4.5 % short at 850 hPa.
+   :cpp:`erf.fire.heat_tendency_exner = true` divides the tendency by
+   :math:`\Pi` of each cell so that the enthalpy integrates to the flux; the
+   default omits the factor, as WRF-SFIRE does
+   (``ERF_GTestFireAtmInjection`` checks both). Set together with
+   :cpp:`heat_tendency_density = true` the two factors stack
+   (:math:`\rho / \Pi`).
+
+:cpp:`erf.fire.fire_atm_feedback` multiplies both fluxes before injection;
+zero gives one-way coupling with the fire still responding to the wind, one
+gives the full feedback.
+
+The same area-averaged sensible flux feeds the MRF boundary layer scheme when
+:cpp:`erf.pbl_mrf_fire_thermal_excess` is true, where it raises the convective
+velocity scale of burning columns (:ref:`PBLschemes`). MRF evaluates its
+passes on a halo of columns around every tile, so the flux carries ghost
+columns holding the neighbouring box's value, or the edge column's outside a
+non-periodic face, refilled whenever the flux is written or restored from a
+checkpoint. Before 2026-09-15 it carried none and the option read outside the
+array: builds with assertions stopped in the first step, other builds read
+whatever lay there. ``FireMrfThermalExcess`` runs the coupled
+``FireRestart`` deck with MRF and the option on.
+
+The cell source is rebuilt by the atmosphere at every Runge-Kutta stage and
+the fire tendency is applied after that rebuild. :cpp:`erf.fire.source_mode`
+selects how: ``"overwrite"`` (default, the historical behaviour) replaces the
+potential-temperature and vapour slots, which keeps the injected energy
+independent of the number of stages but discards any other source already
+in those slots, such as the immersed-forcing scalar relaxation, radiative
+heating or Rayleigh damping; ``"add"`` accumulates the fire tendency into the
+freshly rebuilt source, once per stage, so nothing is lost and nothing is
+double counted. Use ``"add"`` whenever another source writes into those
+slots: immersed forcing applied on the slow step
+(``erf.immersed_forcing_substep = false``, the anelastic default), radiative
+heating, Rayleigh damping. With immersed forcing on the acoustic substeps
+(the compressible default) the scalar relaxation never meets the slow-step
+source and the two modes are identical, as they are with no other source.
+Because the default would silently drop such a source, a run that leaves
+:cpp:`erf.fire.source_mode` unset while the fire injects heat and the
+atmosphere has radiation, :cpp:`erf.four_stream_radiation`,
+:cpp:`erf.rayleigh_damp_T`, custom theta forcing or subsidence (or custom
+moisture forcing with latent heat on), or slow-step immersed forcing stops at
+start-up and names them; setting the key to either value is the explicit
+choice.
+
+Levels
+~~~~~~
+
+The sensible and latent tendencies and the smoke source go into the source of
+the level the fire grid refines (:cpp:`erf.fire.anchor_level`, the finest
+level by default) at every Runge-Kutta stage of that level's steps, and the
+flux handed to the MRF boundary layer scheme with
+:cpp:`erf.pbl_mrf_fire_thermal_excess` is used on that level only, where its
+ghost columns outside the refined region, which has no fire grid, hold zero. Coarser
+levels receive the heat through average-down (``erf.coupling_type =
+"TwoWay"``), which keeps the volume integral, so the heat on level 0 is the
+heat injected on the fire's level: ``Exec/RegTests/FireAnchorLevel`` checks
+the level-0 budget of a prescribed heat disc on level 1 in an anelastic run to
+0.1 %. The anelastic form is what closes that budget: in the compressible form
+of the same deck the level-0 integral held 43 % of the injected heat after
+20 s, against 99.99 % on one level, since rho theta moves with the pressure
+waves the heating raises and is not conserved where they cross the
+coarse-fine interface of the compressible solver. With the fire
+grid on a coarser level than the finest, the same average-down replaces the
+heated cells under the finer level with unheated ones and that heat is lost,
+and with ``"OneWay"`` the finer level never sees it; the coupling warns at
+start-up whenever the level is not the finest. The same test runs the heat disc
+with MRF and the thermal excess on level 1 and restarts it, which must reproduce
+both levels byte for byte.
+
+Heat placement around buildings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The fire-grid flux is area-averaged onto each atmospheric column. With the
+structure mask on (:ref:`sec:FirePropagation`) the fire cells under a
+building carry no flux, so a column fully covered by a footprint receives no
+heat at all, and a column that straddles a footprint edge receives a flux
+diluted by its open fraction. What the plain profile gets wrong in those
+partial columns is where the heat goes: it is spread over the cells below
+the roof as if the column were open. With
+:cpp:`erf.fire.heat_open_fraction` (requires
+:cpp:`erf.fire.structures.enable`) every column carries its open fraction
+:math:`f` and the mean roof height :math:`H` of its structure cells, both
+area-averaged from the fire grid at initialisation. A cell's share of the
+exponential profile is scaled by :math:`f` below the roof, by one above it,
+and linearly across the cell that holds the roof, and the column is
+renormalised over the shares that remain,
+
+.. math::
+
+   w_k = \frac{\bigl(e^{-z_k/\alpha_g} - e^{-z_{k+1}/\alpha_g}\bigr)\, s_k}
+              {\sum_j \bigl(e^{-z_j/\alpha_g} - e^{-z_{j+1}/\alpha_g}\bigr)\, s_j}
+         \,\bigl(1 - e^{-z_{top}/\alpha_g}\bigr),
+
+so the energy injected per column is exactly what the plain profile injects
+and the share placed below the roof falls from :math:`1 - e^{-H/\alpha_g}`
+to that times the open fraction, the rest being lifted above the roof. On a
+5 m atmosphere grid with 20 m buildings the partial columns are the ring of
+cells along each footprint edge, so the option is a refinement of the edge
+rather than a large change; it matters more as buildings approach the grid
+spacing. With :cpp:`erf.fire.fire_debug` the coupling prints the
+column-integrated heating against the flux handed in, whose ratio is
+:math:`1 - e^{-z_{top}/\alpha_g}` (one for any realistic domain top, and
+about :math:`\rho` times that with the legacy tendency form), the largest
+below-roof share among partial columns, and the largest potential
+temperature of the state under a roof.
+
+Smoke tracer
+------------
+
+With :cpp:`erf.fire.smoke_enable` a passive tracer ``RhoSmoke`` is added to
+the state and fed at the surface with
+
+.. math::
+
+   F_{smoke} = \epsilon\, \frac{Q}{H_c} \quad [\mathrm{kg\,m^{-2}\,s^{-1}}],
+
+where :math:`\epsilon` = :cpp:`erf.fire.smoke_emission_factor` (kg of smoke
+per kg of fuel, default 0.02) and :math:`H_c` =
+:cpp:`erf.fire.smoke_heat_of_comb` (J per kg of fuel, default
+1.87 × 10⁷). The emission uses the same lagged, coarsened heat flux as the
+energy injection and is placed in the lowest atmospheric cell. The tracer is
+advected and diffused like any other scalar and is available in the
+atmospheric plotfile.
+
+This is the Community Fire Behavior Model's smoke (Jiménez y Muñoz et al.,
+2026): 2% of the fuel burnt, following Coen (2013), released into the first
+atmospheric layer. Two details keep the parity exact.
+:cpp:`erf.fire.smoke_heat_from_fuel` (default false) takes :math:`H_c` from
+the fuel model's own heat content instead of
+:cpp:`erf.fire.smoke_heat_of_comb`, so the fuel burnt is the one the heat
+release was built from (with a spatial fuel map the deck's fuel model is
+used, since the lagged flux carries no fuel codes). And under the CFBM heat
+flux partition the lagged sensible flux is :math:`f_{dry} Q`; the emission
+divides that factor back out, so the smoke is the same under both
+partitions. The ``smoke_*`` decks of ``Exec/RegTests/FireFluxPartition``
+check both.
+
+References
+----------
+
+- Andrews, P. L. (2012). Modeling wind adjustment factor and midflame wind speed for Rothermel's surface fire spread model. USDA Forest Service General Technical Report RMRS-GTR-266.
+- Rothermel, R. C. (1972). A mathematical model for predicting fire spread in wildland fuels. USDA Forest Service Research Paper INT-115.
+- Rothermel, R. C. (1983). How to predict the spread and intensity of forest and range fires. USDA Forest Service General Technical Report INT-143.
+- Mandel, J., Beezley, J. D. and Kochanski, A. K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geoscientific Model Development, 4, 591-610.
+- Finney, M. A. (1998). FARSITE: Fire Area Simulator model development and evaluation. USDA Forest Service Research Paper RMRS-RP-4.

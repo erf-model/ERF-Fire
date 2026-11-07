@@ -1,0 +1,747 @@
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_propagation.rst at 39e777bcc by
+.. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
+
+.. role:: cpp(code)
+   :language: c++
+
+.. _sec:FirePropagation:
+
+Front Propagation
+=================
+
+The rate-of-spread models (:ref:`sec:ROS_Models`) give a speed at every fire
+cell. This page describes how the burned region is advanced at that speed.
+Two methods are available through :cpp:`erf.fire.propagation_method`:
+``"farsite"`` (default), a cell-by-cell Huygens scheme in the spirit of FARSITE,
+and ``"levelset"``, a Hamilton-Jacobi solver. Both act on the same normalised
+level set ``fire_phi`` and both record ``fire_arrival_time``, so everything
+downstream (fuel consumption, heat flux, diagnostics, output) is independent
+of the choice.
+
+Level set and ignition
+----------------------
+
+``fire_phi`` is zero on the front, negative inside the burned region and
+positive outside. On the level-set path it is a signed distance in metres,
+unclamped (the advection, the Godunov Hamiltonian and the reinitialisation
+assume :math:`|\nabla\phi| = 1`); on the FARSITE path it is a normalised
+indicator clamped to :math:`[-1, 1]`. The disc ignition sets
+
+.. math::
+
+   \phi = d - r \quad \text{(level set)}, \qquad
+   \phi = \max\!\left(-1, \min\!\left(1, \frac{d - r}{r}\right)\right) \quad \text{(FARSITE)},
+
+where :math:`d` is the distance from the ignition centre
+:cpp:`erf.fire.ignition_x`, :cpp:`erf.fire.ignition_y` and :math:`r` is
+:cpp:`erf.fire.ignition_r`; :math:`r = 0` is no disc, and the level set
+starts at the domain diagonal everywhere, the FARSITE
+indicator at :math:`+1`, until an ignition stamps a front (until 2026-10 the
+level set started at :math:`d`, a disc of zero radius that grew from the
+first step). Polygon, polyline, threshold and scheduled
+ignitions (:ref:`sec:MultiIgnition`) and ember landings
+(:ref:`sec:FireSpottingCrown`) stamp with the same convention of the path,
+min-merged into the field. Firebreaks
+(:ref:`sec:SpatialFuel`) stamp a large positive sentinel.
+
+``fire_arrival_time`` starts at :math:`-1` everywhere and is set to the
+current time on the step a cell's :math:`\phi` first becomes negative. It is
+never reset, so it is the cumulative burned region and the field to use for
+burned area, perimeter and arrival statistics.
+
+FARSITE path
+------------
+
+The default path grows the burned region by Huygens' principle, as Finney's
+FARSITE does, but on the fire grid rather than on a free polygon, and with the
+Richards (1990) spread shape below. Each fire subcycle of length
+:math:`\Delta t_f`:
+
+1. **Ellipse shape.** The length-to-width ratio of the local spread ellipse
+   follows Anderson (1983) from the midflame wind :math:`U` in mph,
+
+   .. math::
+
+      L/W = 0.936\, e^{0.2566 U} + 0.461\, e^{-0.1548 U} - 0.397, \qquad 1 \le L/W \le 8,
+
+   when :cpp:`erf.fire.farsite.use_anderson_lw` is 1 (setting it to 0 takes
+   the ratio :math:`(a + c) / (2b)` of :cpp:`erf.fire.farsite.coeff_a`,
+   ``coeff_b`` and ``coeff_c``). With :cpp:`erf.fire.farsite.shape =
+   "ellipse"` (default) the shape is the Huygens ellipse of Richards (1990)
+   with Alexander's (1985) head-to-back ratio
+   :math:`HB = (L/W + \sqrt{(L/W)^2 - 1})^2`: semi-axes
+   :math:`b = (R + R/HB)/2` along the wind and :math:`a = b / (L/W)` across
+   it, centre offset :math:`c = b - R/HB`, so the head runs at
+   :math:`b + c = R`, the back at :math:`b - c = R/HB` and the flanks at
+   :math:`a`; the normal speed of a front whose normal makes the angle
+   :math:`\theta` with the wind is
+   :math:`c\cos\theta + \sqrt{b^2\cos^2\theta + a^2\sin^2\theta}`.
+   Without wind it is the disc of radius :math:`R`, and a vanishing wind
+   leaves the rates continuous. ``"rectangle"`` is the shape this path grew
+   until October 2026: head, flank and backing rates :math:`aR`, :math:`bR`
+   and :math:`cR` with the Richards coefficients :math:`a = 1`,
+   :math:`c = 0.2`, :math:`b = 1.2 / (2\, L/W)` read as a support function,
+   :math:`R\,(a\cos\theta + b\,|\sin\theta|)` ahead and
+   :math:`R\,(b\,|\sin\theta| - c\cos\theta)` behind, which is the
+   rectangle :math:`[-cR, aR] \times [-bR, bR]` in the wind frame, with a
+   head-to-back ratio of 5 at every wind, so a vanishing wind jumped the back
+   from :math:`R` to :math:`R/5`. ``ERF_GTestFarsiteShape`` checks the rates
+   of both from a point source and the continuity at zero wind.
+2. **Front cells** are the unburned, burnable cells with a burned neighbour
+   across a face.
+3. **Arrival time.** A front cell burns when the shape grown from its burned
+   neighbours reaches its centre. For each quadrant, with :math:`T_x` and
+   :math:`T_y` the arrival times of its neighbours along :math:`x` and
+   :math:`y`,
+
+   .. math::
+
+      T = \min_{0 \le \lambda \le 1} \left[ (1-\lambda)\, T_x + \lambda\, T_y
+          + \frac{\gamma\big((1-\lambda)\,\Delta x,\ \lambda\,\Delta y\big)}{\bar R} \right],
+
+   where :math:`\gamma(\mathbf d)` is the time the shape takes to cover the map
+   vector :math:`\mathbf d` at unit head rate, lengthened by
+   :math:`\sqrt{1 + (\nabla z \cdot \hat{\mathbf d})^2}` on a slope. This is
+   the Hopf-Lax update of the arrival time, taken over the four quadrants (one
+   neighbour alone gives the end point). With the ellipse every burned cell
+   within nine cells is also tried as a direct Huygens source,
+   :math:`T_{src} + \gamma(\mathbf x - \mathbf x_{src}) / \bar R`: the segment
+   update interpolates :math:`T` linearly between two face neighbours and lags
+   where the shape's characteristic is far from the grid directions (the
+   ellipse's flank grows from a source about :math:`L/W` cells upwind, and the
+   segment stencil alone gave a third of its rate), while a direct source gives
+   the exact point-source arrival (``ERF_GTestFarsiteShape``). The distance
+   available to a source is the difference of a distance clock every cell
+   accumulates as its own :math:`R\,\Delta t_f` (``fire_disp_accum``
+   components 2 and 3, the clock and its value at the cell's burn), so a rate
+   that changes in time (the acceleration clocks) is integrated over the
+   direct path rather than applied at its current value (the segment update
+   still applies the mean of the current rate over its window, which dates a
+   cell early by up to a fraction of one fire substep under a rising rate,
+   bounded and not accumulating); where the source's and the
+   cell's rates differ the distance is bounded by the source's own integral
+   since it burned, which a path through the slower fuel cannot beat. The
+   FARSITE path keeps the ellipse aligned with the wind; with the FBP model
+   the head rate is that of the vector sum of the wind and the
+   slope-equivalent wind, but the shape is not rotated toward it. If :math:`T`
+   falls inside the subcycle the cell burns and :math:`T` becomes its
+   ``fire_arrival_time``. A cell whose stencil holds any burned cell is a
+   candidate (with the ellipse; the rectangle and the disc keep the face
+   neighbours), since under an oblique wind the ellipse reaches the cells on
+   its axis before any face neighbour of theirs burns. The clocks grow as
+   :math:`R\,t` over the run; in single precision a 24 h run at 10 m/s
+   resolves them to 0.06 m. For a planar front aligned with the grid it is
+   exact: rows burn one at a time, a row spacing along the normal over the
+   normal speed apart; an oblique front is within one discrete-source offset
+   of a cell.
+4. **Rate.** :math:`\bar R` is the mean, since the first neighbour burned, of
+   the larger of the cell's own rate of spread and those of its burned
+   neighbours, accumulated in ``fire_disp_accum``. The burned side carries the
+   crown-fire rate, which is set only in burned cells; the cell's own rate keeps
+   the front moving where a burned cell's rate has dropped.
+5. **Level set.** :math:`\phi` is rebuilt as :math:`-1` in burned cells and
+   :math:`+1` elsewhere.
+
+The update reads a cell and its four neighbours only, so the arrival times do
+not depend on the box decomposition or the number of ranks. The subcycle
+length is :cpp:`erf.fire.farsite.cfl_fire` times the cell size over the maximum
+rate of spread. Because the directionality comes from the Anderson ellipse, the
+rate-of-spread models need only supply the head-fire rate on this path;
+:cpp:`erf.fire.directional_ros` has no effect here.
+
+:cpp:`erf.fire.farsite.front_update` selects the update. ``"front_cell"`` is
+the default and the one described above. ``"legacy"`` is the update used before
+September 2026: every cell with :math:`\phi \le`
+:cpp:`erf.fire.farsite.phi_threshold` and a nonzero gradient of :math:`\phi`
+accumulated :math:`R\,\Delta t_f` along its normal and, once that reached one
+cell, stamped a burned target one cell ahead
+(:cpp:`erf.fire.farsite.gaussian_sigma` chooses a single cell, an automatic or a
+fixed stamp radius). Since :math:`\phi` was rebuilt as 0 on every unburned cell,
+the first unburned row stamped along with the last burned row, and the front
+advanced two rows per cell of travel: about twice the rate of spread at the
+head, flanks and back. ``Exec/RegTests/FarsiteFrontUpdate`` runs both against
+the Richards rates. ``phi_threshold`` and ``gaussian_sigma`` apply to the
+legacy update only.
+
+The startup acceleration of :ref:`fire_acceleration` rescales the rate before
+this step. The size-based model scales every cell. The temporal model with
+:cpp:`erf.fire.accel.clock = "front"` writes its factor to the burned cells and
+to the unburned cells the front moves into, so both updates advance the front
+at the accelerated rate. With the default ``"legacy"`` clock only burned cells
+carry the factor, and a cell starts again from zero rate when it burns. The
+``"front_cell"`` update then takes the front cell's own equilibrium rate as the
+larger one and is not slowed at all, and the ``"legacy"`` update still advances
+the first unburned row at the equilibrium rate
+(``Exec/RegTests/FireAccelerationClock``).
+
+Level-set path
+--------------
+
+Setting :cpp:`erf.fire.propagation_method = "levelset"` solves
+
+.. math::
+
+   \frac{\partial \phi}{\partial t} = -R(x, y)\,\bigl(|\nabla \phi| - \varepsilon\, \Delta \phi\bigr)
+
+with the Godunov upwind Hamiltonian for :math:`|\nabla\phi|` (Osher and
+Sethian: for an expanding front the backward difference counts only where
+it is positive and the forward difference only where it is negative, so the
+update always reads the burned side) and a three-stage strong stability
+preserving Runge-Kutta step. The one-sided derivatives that feed the
+Hamiltonian follow WRF-Fire and the Community Fire Behavior Model
+(Munoz-Esparza et al. 2018; Jimenez y Munoz et al. 2026): by default,
+:cpp:`erf.fire.levelset.gradient = "weno5z_front"`, they are the
+fifth-order Hamilton-Jacobi WENO of Jiang and Peng (2000) with the Z
+weights of Borges et al. (2008) within :cpp:`erf.fire.levelset.weno_band_cells`
+(default 4) fire cells of the front, where the value of the level set
+matters, and first-order differences elsewhere, where it does not.
+``"weno5z"`` uses WENO everywhere and ``"upwind"`` first order everywhere,
+the scheme before 2026-09-05; the Godunov choice between the two sides is
+the same in all three. The reinitialisation uses the same derivatives.
+First-order differences dissipate the front: in the line-ignition test of
+Jimenez y Munoz et al. (2026) the first-order run lags the theoretical
+front the most and WENO5 removes most of the gap. Next to a masked wall
+the wide stencil falls back to the first-order difference through the
+wall stencil. The ``Level_Set_Advection`` canonical case compares the three.
+
+WRF-Fire and CFBM also carry two artificial viscosities, one near the front
+and one elsewhere, both 0.4 by default; in the line-ignition test of
+Jimenez y Munoz et al. (2026) lowering the near-front value to 0.1 brings
+the WENO5 front onto the theoretical one. The same option is
+:cpp:`erf.fire.levelset.eps_visc_front` (WRF-Fire ``fire_viscosity_bg``),
+0.1 by default as in the paper: it is the coefficient within
+:cpp:`erf.fire.levelset.visc_front_cells` (default 2, ``fire_viscosity_ngp``)
+fire cells of the front, blending linearly to :cpp:`eps_visc` (0.4) over
+the next :cpp:`erf.fire.levelset.visc_transition_cells` (default 2;
+WRF-Fire's code blends over ``fire_viscosity_band`` times
+``fire_viscosity_ngp`` cells, 0.5 x 2 = 1 cell with its defaults). A negative
+value keeps the single :cpp:`eps_visc` everywhere. On the 5 m grid of the
+WUI wildland case the near-front value of 0.1 leaves the head rate
+unchanged and widens the flanks by about 7% against the single value
+(4.96 ha burned at 1200 s against 4.83 ha): the viscosity acts where the
+front is curved. The Laplacian term is an artificial
+viscosity with coefficient :cpp:`erf.fire.levelset.eps_visc` (default 0.4)
+that keeps the front smooth at the grid scale. The coefficient is a length
+in metres (the term is :math:`R\,\varepsilon\,\nabla^2\phi` with
+:math:`\phi` in metres), so the smoothing in cells is
+:math:`\varepsilon / \Delta x` and a coarser grid is smoothed less. When terrain slopes are
+available, :math:`|\nabla \phi|` is projected onto the terrain surface so that
+:math:`R` is a rate along the ground rather than in map view.
+
+The viscosity term is explicit, so it limits the subcycle. Frozen at the
+fastest cells (:math:`R = R_{max}`, the rate that sets the subcycle) about a
+front of unit normal :math:`\mathbf{n}`, each wave
+:math:`e^{i(\theta_x i + \theta_y j)}` is multiplied in one subcycle by
+:math:`G(z) = 1 + z + z^2/2 + z^3/6`, with :math:`z` the subcycle length
+times the multiplier of the upwind differences and the five-point Laplacian.
+With first-order differences the binding wave is the two-cell wave
+:math:`(-1)^{i+j}`, whose :math:`z` is real:
+
+.. math::
+
+   z = -\mathrm{cfl}\; h \left[ a \left(\frac{n_x}{\Delta x} + \frac{n_y}{\Delta y}\right)
+       + 4\,\varepsilon \left(\frac{1}{\Delta x^2} + \frac{1}{\Delta y^2}\right) \right],
+   \qquad h = \min(\Delta x, \Delta y),
+
+with :math:`a = 2`, and every three-stage, third-order Runge-Kutta step is
+stable on the negative real axis down to :math:`z = -2.513`. For WENO5
+(:math:`a = 16/15` on this wave, where its weights are the linear ones) the
+two-cell wave binds only up to cfl of about 0.55; above that a complex wave
+about 2.4 cells long on a front near the diagonal is tighter (at cfl 0.8 on
+square cells :math:`\varepsilon \le 0.173\,\Delta x` against
+:math:`0.204\,\Delta x` from the formula). Start-up therefore scans
+:math:`|G|` over all wave numbers and 17 front directions
+(``levelset_substep_gain`` in ``ERF_NumericalSchemes.H``; the scan matches
+the formula to :math:`10^{-4}\,\Delta x` for first-order differences). On
+square cells at the default cfl 0.4 the limits are
+:math:`\varepsilon \le 0.432\,\Delta x` with first-order differences
+(away from the front with the default ``"weno5z_front"``) and
+:math:`0.597\,\Delta x` with WENO5, both for a front along the diagonal.
+Every curved front, and every fire without wind, has a part facing that
+direction, so start-up stops the run, naming the input and the largest
+stable viscosity and cfl, whenever a coefficient is unstable for any front
+direction. Each coefficient is checked with the differences used where it
+acts, including the value just beyond the WENO band of ``"weno5z_front"``
+when that is larger than :cpp:`eps_visc`, and, with
+:cpp:`erf.fire.levelset.wall_extrapolate`, every WENO5 coefficient again with
+first-order differences, which the stencil falls back to next to a
+non-burnable cell. Because the coefficient is in
+metres, the default 0.4 m stops a run on fire cells finer than 0.927 m at
+cfl 0.4, and the default :cpp:`eps_visc_front` of 0.1 m below 0.168 m. On
+the split-Hamiltonian path
+(:cpp:`erf.fire.directional_split_hamiltonian`) the viscous term carries the
+no-wind rate :math:`R_0` rather than :math:`R_{max}`, so the check is
+conservative there by about :math:`R_{max}/R_0`.
+``ERF_GTestLevelSetAdvection`` checks the limit against the subcycle itself.
+
+The subcycle length is :cpp:`erf.fire.levelset.cfl` (default 0.4) times the
+cell size over the maximum rate of spread. A cell's ``fire_arrival_time`` is
+the time the front crossed its centre, interpolated in time within the
+subcycle from :math:`\phi` before and after it,
+:math:`t_0 + \Delta t_f\, \phi_{old} / (\phi_{old} - \phi_{new})`; until
+October 2026 it was the start of the subcycle, a bias of up to one subcycle
+(:math:`-0.2\, h/R` on average at the default cfl) that the verification
+tolerances now resolve. The field is periodically reinitialised, see below.
+
+Direction-dependent spread
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Handed one scalar :math:`R` per cell (:cpp:`erf.fire.directional_ros =
+false`), the level set grows a disc at the head-fire rate: flanks and backing
+fire advance as fast as the head. By default
+(:cpp:`erf.fire.directional_ros = true`, as in WRF-Fire) the wind and slope are projected onto
+the front normal :math:`\hat n = \nabla\phi / |\nabla\phi|` and the selected
+model is evaluated with the projected scalars,
+
+.. math::
+
+   R(\hat n) = \text{model}\bigl(\max(\mathbf U \cdot \hat n, 0),\ \max(\nabla z \cdot \hat n, 0)\bigr),
+
+inside every Runge-Kutta stage, so the head, flanks and backing fire each get
+the rate the model gives for their own orientation. Backing and downslope
+components are clamped at zero rather than reversed, since the empirical
+models take magnitudes. The FARSITE ellipse is deliberately not imposed on top
+of a resolved wind field: its length-to-width fit stands in for a flow field
+that ERF resolves, and imposing both would double count the wind. The
+projection is also what the hybrid model uses on this path, and Balbi has an
+equivalent switch :cpp:`erf.fire.balbi.directional` that additionally carries
+its per-cell couplings. ``Exec/RegTests/FireRosComparison`` tabulates the
+effect: the head rate is unchanged and the burned area falls, since the flanks
+no longer run at the head rate.
+
+A normal speed is not a spread rate in a direction, though, and from a point
+ignition the difference shows. The exact (viscosity) solution of
+:math:`\phi_t + R(\hat n)|\nabla\phi| = 0` from a point is the Wulff shape
+
+.. math::
+
+   W(t) = \{\mathbf x : \mathbf x\cdot\hat n \le t\,R(\hat n)\ \text{for every}\ \hat n\},
+
+whose extent along a direction :math:`\hat d` is
+:math:`\min_{\hat n\cdot\hat d>0} R(\hat n)/(\hat n\cdot\hat d)`. That equals
+:math:`R(\hat d)` only when :math:`R` is the support function of a convex set.
+Rothermel's projected rate :math:`R_0(1 + \phi_w (U n_x)^B)` is not once
+:math:`\phi_w (B-1) > 1`, nor :math:`R_0(1 + \phi_s (s n_x)^2)` once
+:math:`\phi_s > 1`: the head of a point fire becomes a wedge of oblique
+facets whose tip runs at
+:math:`R_0\,\tfrac{B}{B-1}\,(\phi_w(B-1))^{1/B}` in wind and about
+:math:`2\sqrt{\phi_s}\,R_0` on a slope, well below the head rate
+:math:`R_0(1+\phi_w+\phi_s)`. A better scheme would not help, since it is the
+exact solution that falls short; the level set, which freezes
+:math:`R(\hat n)` from central differences, lands between the tip speed and
+the head rate. A straight line fire keeps :math:`\hat n` along the wind and is
+unaffected. ``Exec/RegTests/FireDirectionalShape`` (point ignition in a uniform
+wind) and ``Exec/CanonicalTests/Fire/Verification/Slope_No_Wind`` measure it: in
+a uniform 1.5 m/s wind on short grass (:math:`\phi_w = 9.4`) the head runs at
+0.185 m/s against Rothermel's 0.249 m/s and a Wulff tip of 0.142 m/s, between
+0.153 and 0.198 m/s depending on the gradient scheme and viscosity.
+
+:cpp:`erf.fire.directional_shape = "ellipse"` (default ``"projection"``)
+removes the shortfall by taking the normal speed from the support function of
+an ellipse built from the same model. The ellipse is convex, so it is its own
+Wulff shape and spreads a point fire's head at the head rate. With
+:math:`R_0` the model's no-wind, no-slope rate and
+:math:`\Delta R_w = \text{model}(|\mathbf U|, 0) - R_0`,
+:math:`\Delta R_s = \text{model}(0, |\nabla z|) - R_0` the wind and slope
+increments, the head runs at
+
+.. math::
+
+   R_h = R_0 + g\,\bigl|\Delta R_w\,\hat{\mathbf w} + \Delta R_s\,\hat{\mathbf s}\bigr|,
+   \qquad g = \frac{\text{model}(|\mathbf U|, |\nabla z|) - R_0}{\Delta R_w + \Delta R_s},
+
+along that vector (:math:`\hat{\mathbf w}` and :math:`\hat{\mathbf s}` the
+unit wind and upslope vectors: BEHAVE's vector addition, with :math:`g = 1` for
+the additive Rothermel form), and the back and flanks at :math:`R_0`. The
+semi-axes are :math:`b = (R_h + R_0)/2` along the head and :math:`a = R_0`
+across it, with centre offset :math:`c = (R_h - R_0)/2`, and the normal speed
+is the support function given under Spread ellipse below. With aligned wind
+and slope the head, back and flank rates are the projection's own; only the
+directions between them change. The length-to-width ratio
+:math:`(R_h/R_0 + 1)/2` is not capped, as the projection's is not. The option
+covers Rothermel, BEHAVE, MacArthur, Cheney-Gould and FBP; Balbi and the hybrid
+keep the projection, and :cpp:`erf.fire.levelset.ellipse` cannot be combined
+with it. The unit test ``ERF_GTestDirectionalShape`` checks the rates, the
+vector addition and the Wulff extents of both forms.
+
+:cpp:`erf.fire.directional_wind_coupling = "advective"` (default ``"projection"``,
+Rothermel with :cpp:`directional_shape = "projection"` only) removes the same
+shortfall a different way: rather than imposing a shape on top of the
+projection's rates, it changes how Rothermel's wind factor couples to the
+front-normal direction. :math:`\phi_w` is exponentiated from the raw wind
+speed :math:`|\mathbf U|` once, and only the result is scaled by the cosine to
+the front normal afterward,
+
+.. math::
+
+   R(\hat n) = R_0\bigl(1 + \phi_w(|\mathbf U|)\,\max(\hat{\mathbf U}\cdot\hat n, 0)\bigr),
+
+rather than :math:`R_0(1 + \phi_w(|\mathbf U|\max(\hat{\mathbf U}\cdot\hat n, 0)))`.
+Since :math:`\hat n|\nabla\phi| = \nabla\phi`, this :math:`R(\hat n)` turns the
+level-set equation into pure advection by a wind-aligned velocity plus
+isotropic growth, :math:`\phi_t + \mathbf V\cdot\nabla\phi + R_0|\nabla\phi| = 0`
+with :math:`\mathbf V = (\phi_w(|\mathbf U|) R_0/|\mathbf U|)\,\mathbf U` -- the
+same reduction used in the original level-set fire-spread formulation (Mandel,
+Beezley and Kochanski 2011) and, not coincidentally, matching WRF-Fire's
+``fire_ros`` (``module_fr_fire_phys.F``). Being linear in the cosine, it is
+also the support function of a stadium (a disc of radius :math:`R_0` swept
+along the wind vector, since the clamp at zero flattens the back rather than
+reversing it) -- convex, and so its own Wulff shape, giving the same head rate
+as the ellipse. Unlike the ellipse this is the model's own oblique rate rather
+than an imposed shape: the back and flanks come out at :math:`R_0` here
+because that is Rothermel's own zero-wind rate, not because they were set that
+way, so for Rothermel the two options happen to agree.
+``Exec/RegTests/FireDirectionalShape`` includes an ``advective`` deck alongside
+``ellipse``; ``Exec/RegTests/FireAdvectiveWindCoupling`` repeats the comparison
+on a finite ignition line, where the projection's wedge shows at the line's
+ends rather than a point.
+
+With the advective coupling the equation is a genuine two-term Hamiltonian,
+:math:`\phi_t + R_0|\nabla\phi| + \max(\mathbf V\cdot\nabla\phi, 0) = 0`, but the
+default scheme still builds one scalar :math:`R(\hat n)` from an estimated front
+normal and multiplies it by a single Godunov-upwinded :math:`|\nabla\phi|`. That
+upwinds the wind-driven term along the front normal, while its information
+travels along :math:`\mathbf V`, including the component tangential to the
+front, and the error depends on the angle between :math:`\mathbf V` and the grid
+axes: none for a grid-aligned wind, a wing on the flanks for an oblique one.
+:cpp:`erf.fire.directional_split_hamiltonian = true` (default ``false``) upwinds
+the terms separately: :math:`R_0|\nabla\phi|` with the Godunov flux, and each of
+the wind and slope terms by the sign of its own velocity components
+(ordinary linear-advection upwind), with :math:`R_0`, :math:`\mathbf V_w` and
+:math:`\mathbf V_s` built once per advection call. It needs the same
+combination as the advective coupling (Rothermel, ``projection`` shape) and
+takes the per-fuel coefficient table and the acceleration and suppression
+scale factor the default path takes. The unit test
+``ERF_GTestSplitHamiltonianAdvection`` checks the head rate, per-fuel
+coefficients, a mixed fuel map and the scale factor, and
+``Exec/RegTests/FireSplitHamiltonian`` compares the two schemes on a line fire
+at 0 and 34 degrees to the wind.
+
+Flanks at :math:`R_0` are the projection's claim, not an observation, and give
+a length-to-width ratio far above the observed one: 5.7 for short grass in a
+1.5 m/s wind, where Anderson (1983) gives 1.5.
+:cpp:`erf.fire.directional_ellipse_lw = "anderson"` (default ``"model"``)
+keeps the head rate, its direction and the back rate :math:`R_0`, and sets the
+semi-minor rate to :math:`a = b/(L/W)`. Here :math:`L/W` is Anderson's ratio (as
+in the spread ellipse below), capped at
+:cpp:`erf.fire.directional_ellipse_lw_max` (default 8), evaluated at the
+effective wind speed :math:`U_\text{eff}`. That speed is the wind that alone
+would give the head rate, :math:`\text{model}(U_\text{eff}, 0) = R_h`, which is
+BEHAVE's definition, so a slope elongates the fire as the equivalent wind
+would. For Rothermel and BEHAVE it is the inverted wind factor
+:math:`((R_h/R_0 - 1)/(C (\beta/\beta_\text{op})^{-E}))^{1/B}`, capped at the
+model's own wind limit; the other models find it by bisection. The ellipse
+stays convex, so the head still runs at :math:`R_h`.
+
+Spread ellipse
+~~~~~~~~~~~~~~
+
+The alternative the FARSITE family uses (Finney 1998; ELMFIRE, Prometheus,
+Cell2Fire) is available as an option, :cpp:`erf.fire.levelset.ellipse`,
+off by default and exclusive with the projection above. Every point of the
+front spreads as a Huygens ellipse: the length-to-width ratio :math:`L/W`
+follows Anderson (1983) from the midflame wind (capped at
+:cpp:`erf.fire.levelset.ellipse_lw_max`, default 8, or fixed with
+:cpp:`erf.fire.levelset.ellipse_lw`), the head-to-back ratio follows
+Alexander (1985),
+
+.. math::
+
+   H/B = \frac{L/W + \sqrt{(L/W)^2 - 1}}{L/W - \sqrt{(L/W)^2 - 1}},
+
+and with the model's rate :math:`R` as the head rate the ellipse has
+semi-major rate :math:`b = (R + R/(H/B))/2`, semi-minor rate
+:math:`a = b/(L/W)` and centre offset :math:`c = b - R/(H/B)`. The level set
+needs the normal speed of that envelope, the support function of the
+ellipse,
+
+.. math::
+
+   R_n(\theta) = c\cos\theta + \sqrt{b^2\cos^2\theta + a^2\sin^2\theta},
+
+with :math:`\theta` the angle between the front normal and the wind, so the
+head runs at :math:`R`, the flanks at :math:`a` and the back at
+:math:`R/(H/B)`. Unlike the projection this reproduces the saturation of the
+observed length-to-width ratio and a backing rate below the no-wind rate,
+which are calibration the empirical ellipse carries; it also double counts
+a resolved wind for the reason given above, so it is the right choice when
+comparing with those models and the projection is the right choice when the
+flow around the fire is resolved. Slope enters through :math:`R` only; the
+ellipse is oriented by the wind alone. ``Exec/RegTests/FireLevelSetEllipse``
+measures the burned shape against :math:`L/W` and the unit test
+``ERF_GTestLevelSetEllipse`` checks the rates at the head, flanks and back.
+
+Reinitialisation
+~~~~~~~~~~~~~~~~
+
+Advection steepens and flattens :math:`\phi`, so every
+:cpp:`erf.fire.levelset.reinit_every` subcycles (default 5) it is nudged
+toward a metric signed distance, :math:`|\nabla\phi| = 1`, by
+:cpp:`erf.fire.levelset.reinit_iters` (default 1) outer pseudo-time steps of
+
+.. math::
+
+   \frac{\partial \phi}{\partial \tau} = S(\phi_0)\,(1 - |\nabla\phi|),
+   \qquad S(\phi_0) = \frac{\phi_0}{\sqrt{\phi_0^2 + \Delta x^2}},
+
+with the smoothed sign :math:`S` computed once from the field at call entry.
+:cpp:`erf.fire.levelset.reinit_scheme` selects the discretisation.
+
+``"wrf"`` (default) is WRF-Fire's :cpp:`reinit_ls_rk3`: the Wicker and
+Skamarock (2002) three-stage Runge-Kutta scheme, every stage advancing from the
+field at call entry; flux-form WENO5 on :math:`\phi` within
+:cpp:`erf.fire.levelset.weno_band_cells` of the front and first-order ENO
+elsewhere, its upwind side chosen by the sign of :math:`S` times a fourth-order
+central difference. ``"jiang_peng"`` is Jiang and Peng's (2000) HJ-WENO5 with
+third-order SSP-RK3: WENO is applied to one-sided divided differences (the
+Hamilton-Jacobi form the advection also uses) rather than to :math:`\phi` in
+flux form, and the time integrator is third order for this right-hand side
+where Wicker-Skamarock is second. The pseudo-timestep
+:cpp:`erf.fire.levelset.reinit_dtau` defaults to :math:`0.01\,\Delta x` for
+both, WRF-Fire's value. At that setting one call moves :math:`\phi` by at
+most :math:`0.01\,\Delta x\,(1 - |\nabla\phi|)` and the correction spreads
+from the front at unit pseudo-speed, so it is WRF-Fire's 1 % nudge, not a
+restoration: a field stretched to :math:`|\nabla\phi| = 2` behind a fuel
+boundary stays stretched for hundreds of calls, and the band widths set in
+:math:`\phi` units (the WENO band, the two-value viscosity) are
+correspondingly narrower in cells there. ``reinit_dtau = 0.25 dx`` with 40
+iterations restores the unit gradient (``ERF_GTestLevelSetAdvection``
+checks both settings).
+
+Both schemes end with the clamp :math:`\phi \leftarrow \min(\phi, \phi_\mathrm{ref})`
+("the burned area can only grow"). :cpp:`erf.fire.levelset.reinit_clamp`
+selects :math:`\phi_\mathrm{ref}`. ``"step_start"`` (default) is WRF-Fire's
+(``module_fr_fire_model.F`` hands ``prop_ls`` the level set before the step,
+and ``reinit_ls_rk3`` ends with ``lfn_out = min(lfn_out, lfn_in)``): the level
+set at the start of the subcycle that ends with the reinitialisation, before
+its advection, so the reinitialisation may raise :math:`\phi` by up to that
+subcycle's own advance and never above where it stood before it. Ignitions
+are stamped before the subcycles of a step, so the reference already holds
+them. WRF-Fire reinitialises every step; with ``reinit_every`` above 1 the
+reference is still the start of the last subcycle only.
+``"post_advection"``, the form until October 2026, uses the advected field
+the call starts from; it forbids raising :math:`\phi` anywhere, so a burned
+side steeper than :math:`|\nabla\phi| = 1` never relaxes and every
+correction on the unburned side moves the front forward. The difference is
+small at the default strength (0.01 dx once every 5 subcycles) and large for
+a stronger reinitialisation. In ``ERF_GTestLevelSetAdvection``, with 2
+iterations of ``reinit_dtau = 0.25 dx`` after every subcycle, a straight
+front whose level set is three times too steep runs 4.0 m ahead of
+:math:`R t` after 40 m of travel with ``"post_advection"`` and still gains
+5 % of :math:`R`, while with ``"step_start"`` it keeps a fixed 0.36 m offset
+from the first relaxation and moves at :math:`R`; the burned side of a disc
+stays at :math:`|\nabla\phi| \approx 2.5` with ``"post_advection"`` and
+returns to 1.00 with ``"step_start"``. The default changes the answer of
+every level-set run a little, through the reinitialisation every fifth
+subcycle; the ``FireReinitClamp`` regression test runs one level-set deck
+with each clamp and checks that the ``"post_advection"`` head runs ahead
+(1.16 m after 120 s there). With :cpp:`erf.fire.levelset.reinit_iters` = 0 the
+reinitialisation, and with it the clamp, is skipped, so both values give
+the same answer.
+
+Neither scheme corrects the distance in cells that straddle the front, and
+both end with the clamp above, so a cell burned at the start of a subcycle
+stays burned; non-burnable cells are left unchanged and their neighbours are
+read through the wall stencil. Both build the gradient from independent
+:math:`x` and :math:`y` one-sided derivatives, which leaves a small error that
+depends on the front's angle to the grid axes.
+
+Non-burnable cells
+------------------
+
+A non-burnable mask on the fire grid marks cells the fire may never enter.
+It is built once at initialisation from up to three sources, each off by
+default:
+
+- **structures**, with :cpp:`erf.fire.structures.enable`: every cell whose
+  height in the building heightmap :cpp:`erf.fire.structures.file` exceeds
+  :cpp:`erf.fire.structures.min_height`. The file is in the ERF terrain text
+  format, sampled onto fire cell centres by nearest point so footprints keep
+  their edges, and defaults to the hybrid selector's file and then to
+  :cpp:`erf.buildings_file_name`, so one heightmap can drive the
+  immersed-forcing buildings, the hybrid ``structure`` selector and the mask;
+- **fuel codes** listed in :cpp:`erf.fire.fuel_map.nonburnable_codes`, for
+  example ``0`` (nodata) and the Scott and Burgan non-burnable classes
+  ``91``-``99``. Without the list an unknown code still falls through to fuel
+  model 1 in the Rothermel table and burns as short grass;
+- **firebreaks**, with :cpp:`erf.fire.firebreak.use_mask`. Firebreaks are
+  otherwise stamped into :math:`\phi` once as a large positive sentinel,
+  which the FARSITE path rebuilds away every subcycle and the level-set
+  reinitialisation clamps; the mask makes them permanent on both paths.
+
+The mask acts in five places, so that no path around it is left open:
+
+1. the rate of spread is zero in mask cells, on the isotropic field and inside
+   every Runge-Kutta stage of the direction-dependent drivers;
+2. the level set is clamped at zero there, after every advection subcycle,
+   after reinitialisation and after any scheduled ignition. The clamp is only
+   a guard: with a zero rate of spread a masked cell's value does not evolve
+   during advection, and reinitialisation keeps its sign, so masked cells
+   keep a consistent signed distance to the real front. They are not lifted
+   to a fixed positive level, which would let the footprint edge act like a
+   front of its own;
+3. on the FARSITE path a mask cell is never a front cell (and a legacy marker
+   target that lands in one is dropped), so the front stops at the footprint
+   instead of crossing it;
+4. ember landings on a mask cell are discarded and the spot disc never stamps
+   into one;
+5. the fuel load is zero in mask cells from the start, so they produce no
+   heat flux, intensity or flame diagnostics, and the arrival time is never
+   set.
+
+**Walls in the level-set stencils.** A masked cell keeps the level-set value
+it had before the front arrived, so once its open neighbour burns the two
+differ by many metres across one cell. The Godunov norm takes the larger
+one-sided difference, which is then the one into the wall, and the cells
+along a wall burn down far faster than the spread rate; the front normal
+from the central difference points into the wall as well, so the directional
+models evaluate a head-fire rate there. On flat ground this drives the flank
+along a wall about 20% fast (``FireHybridObstacles``, probe ``u3``).
+:cpp:`erf.fire.levelset.wall_extrapolate` extrapolates the level set into
+the mask inside every stencil: a masked stencil point takes the centre
+cell's value in the gradient, the Laplacian, the front normal and the
+reinitialisation, which itself leaves masked cells untouched. The wall is
+then a zero-gradient boundary of the distance function, the normal next to
+it runs along it, and the flank arrives at the unmasked rate.
+``Exec/RegTests/FireNearWall`` measures this. Off by default, so existing
+masked results are unchanged; it has no effect without a mask.
+
+The mask is written to the fire plotfile as ``fire_nonburnable``. A fire
+approaching a masked footprint goes around it through whatever burnable
+cells remain; ``Exec/RegTests/FireHybridObstacles`` compares the same
+obstacle deck with the mask off and on. Suppression actions
+(:ref:`sec:FireSuppression`) add a time-dependent source to the same mask:
+fire lines built at a rate and retardant drops, rebuilt every step and
+combined with the static sources by OR before either path reads it.
+
+Choosing a path
+---------------
+
+The FARSITE path is the reference behaviour, carries the Anderson ellipse as
+calibration, and is the path the canonical FARSITE tests and the acceleration,
+spotting and crown-fire options were developed on. The level-set path is the
+one to use when the wind is resolved and direction-dependent spread from the
+model itself is wanted, when the Balbi couplings are in use, or when the
+hybrid model is run on the directional path. The two are not comparable cell
+for cell: the ellipse reproduces neither a backing rate below the no-wind rate
+nor the saturation of the length-to-width ratio, and the projection reproduces
+neither of the empirical calibrations the ellipse carries.
+
+The temporal acceleration reaches the level-set speed only with
+:cpp:`erf.fire.accel.clock = "front"`, whose factor also multiplies the rate the
+directional, hybrid and Balbi paths rebuild in every Runge-Kutta stage. Those
+paths never read the accelerated ``fire_ros``, so under the ``"legacy"`` clock
+they spread as if acceleration were off (``Exec/RegTests/FireAccelerationClock``).
+
+Restart
+-------
+
+The checkpoint stores ``fire_phi``, ``fire_arrival_time``, ``fire_ros``,
+``fire_fuel_load``, ``fire_fuel_mc``, the FARSITE displacement accumulator,
+the lagged fluxes waiting to be injected and, when crown fire is on, the
+crown state and load. On restart the fire
+layer is initialised from the inputs as on a clean start (fuel map,
+firebreaks, hybrid weights, structure mask) and these fields are then read
+back, so the front, burned area and consumed fuel continue exactly.
+
+References
+----------
+
+- Finney, M. A. (2004). FARSITE: Fire Area Simulator model development and evaluation. USDA Forest Service RMRS-RP-4 Revised.
+- Anderson, H. E. (1983). Predicting wind-driven wild land fire size and shape. USDA Forest Service Research Paper INT-305.
+- Richards, G. D. (1990). An elliptical growth model of forest fire fronts and its numerical solution. International Journal for Numerical Methods in Engineering, 30(6), 1163-1179.
+- Osher, S. and Fedkiw, R. (2003). Level Set Methods and Dynamic Implicit Surfaces. Springer.
+- Borges, R., Carmona, M., Costa, B. and Don, W. S. (2008). An improved weighted essentially non-oscillatory scheme for hyperbolic conservation laws. Journal of Computational Physics, 227(6), 3191-3211.
+- Sussman, M., Smereka, P. and Osher, S. (1994). A level set approach for computing solutions to incompressible two-phase flow. Journal of Computational Physics, 114(1), 146-159.
+- Russo, G. and Smereka, P. (2000). A remark on computing distance functions. Journal of Computational Physics, 163(1), 51-67.
+
+
+Perimeter ignition with spin-up
+-------------------------------
+
+A fire can be started from an observed perimeter instead of a point:
+:cpp:`erf.fire.ignition.polygon_file` lists the vertices and the level set
+is set to the signed distance from that polygon (the key takes several files,
+one perimeter each, stamped with the min rule so they are separate fires that
+merge as they grow). By default the polygon is
+stamped at initialisation. :cpp:`erf.fire.ignition.polygon_time` stamps it
+at that time instead, so the atmosphere spins up before the fire exists;
+this is WRF-SFIRE's perimeter time, the way the Community Fire Behavior
+Model runs start from mapped perimeters (Jiménez y Muñoz et al., 2026, with
+about three hours of spin-up). With
+:cpp:`erf.fire.ignition.polygon_interior_ros` :math:`= R > 0` the interior
+is given the state of a fire that reached the perimeter after spreading
+outward at :math:`R`: a cell at distance :math:`d` inside the perimeter gets
+the arrival time :math:`t_{ign} - d/R`, clamped at the simulation start
+because a negative arrival time reads as unburned, and its fuel load is
+reduced by
+:math:`\exp(-d/(R\tau))`, the exponential burnout the heat-flux step
+applies, with :math:`\tau` = :cpp:`erf.fire.ignition.polygon_interior_tau`
+(the cell crossing time :math:`\Delta x / R` when 0). Without it the whole
+interior ignites at the perimeter time with its fuel intact, which releases
+the heat of the entire burnt area at once. The regression test
+``Exec/RegTests/FirePerimeterIgnition`` checks the interior state cell by
+cell from the fire plotfile.
+
+.. _sec:FireGridEdge:
+
+The edge of the fire grid
+-------------------------
+
+Nothing outside the fire grid burns. At a periodic edge the fire wraps around,
+as the atmosphere does. At a non-periodic edge the ghost cells take the nearest
+interior value on every exchange, so a front that reaches the edge stops there:
+the cells along the wall burn, their heat is released, and the part of the fire
+that would have continued outside the domain is clipped. Nothing is exported
+to a larger domain. This is the guard-off behaviour of WRF-SFIRE, whose fire
+mesh is likewise the whole innermost domain and whose front is likewise
+clipped at its edge.
+
+Three reports tell a deck's author about it.
+
+**The reach estimate at ignition.** On the first fire step with a burning cell,
+:cpp:`erf.fire.edge_reach_check` (default true) prints the distance from the
+nearest burning cell to each non-periodic edge, the largest rate of spread on
+the grid (before the startup acceleration scales it), and the time left in the
+run from ``stop_time`` or ``max_step``, whichever ends it first. For every
+edge closer than that rate times that time it prints a warning naming the
+edge. The rate is the one under the wind at ignition and the estimate is a
+straight line at the head rate, so it errs on the side of warning: a fire the
+wind later turns away from the edge is not warned about again, and a fire that
+accelerates later is not caught. A run without ``stop_time`` and ``max_step``
+prints the distances and the time to each edge at that rate, and no warning.
+
+**The guard band.** :cpp:`erf.fire.boundary_guard_cells` (default 2) is the
+width, in fire cells, of a band along every non-periodic edge, the
+``fire_boundary_guard`` of WRF-SFIRE with its default. Every fire step counts
+the burning cells within it. :cpp:`erf.fire.boundary_guard_action` decides
+what the first contact does:
+
+- ``"warn"`` (default) prints a warning once, naming the edges touched and the
+  time, and records that time as ``edge_contact_time_s`` in the statistics
+  CSV, whose ``edge_band_cells`` column carries the count on every step
+  (:ref:`sec:FireOutput`). The contact time is in the checkpoint, so a restart
+  neither repeats the warning nor forgets that it fired. The run continues
+  with the front clipped at the edge.
+- ``"abort"`` stops the run with a message naming the edge and the time, as
+  WRF-SFIRE does by default: a fire at the edge means the domain was too
+  small, and a stop is cheaper than a forecast of a clipped fire.
+- ``"none"`` checks nothing; the CSV columns stay 0 and :math:`-1`.
+
+A width of zero also turns the band off. A grid periodic in both directions
+has no edge to guard and the check returns at once.
+
+The regression test ``Exec/RegTests/FireBoundaryGuard`` runs a prescribed
+rate of 1 m/s on 2 m fire cells: a disc whose east edge is 10 m from the wall
+enters the 4 m band at 7 s, a disc 190 m from every wall never does, and a
+disc overlapping the wall stops an ``"abort"`` run on its first step. The unit
+test ``ERF_GTestFireBoundaryGuard`` checks the band count per edge, the
+corner counted once, periodic edges skipped, and the distances.
+
+On a refined level (:cpp:`erf.fire.anchor_level`) the fire grid covers the
+refined region only, so its edges are the edges of the refinement: the
+estimate and the band then report a fire about to leave the refined region,
+and their messages ask for a larger refinement box rather than a larger
+domain. The refinement cannot follow the fire during a run yet, since the fire
+grid's level must not regrid; a guard contact is the signal a moving fine
+level will act on.

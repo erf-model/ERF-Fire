@@ -61,3 +61,16 @@ direction will change it. To repeat the comparison:
 ```bash
 git diff --name-status $(git merge-base upstream/development flare/development) flare/development -- Source
 ```
+
+## FLARE model documentation
+
+The pages below describe the FLARE fire model and its inputs. They are copied
+from the [FLARE documentation](https://github.com/erf-model/FLARE/tree/development/Docs/sphinx_doc)
+by `tools/sync_flare_docs.py`; edit them in FLARE and rerun the script.
+
+```{toctree}
+:maxdepth: 2
+
+flare/Fire
+flare/inputs
+```

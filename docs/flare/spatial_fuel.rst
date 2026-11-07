@@ -1,0 +1,210 @@
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/spatial_fuel.rst at 39e777bcc by
+.. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
+
+
+ .. role:: cpp(code)
+    :language: c++
+
+.. _sec:SpatialFuel:
+
+Spatial Fuel Map and Firebreak Barriers
+========================================
+
+Physical Background
+--------------------
+
+Real wildfire simulations require spatially varying fuel properties because fuel models control fire spread rate, intensity, and flame characteristics. Anderson's 13 fuel model classification captures key differences in fuel bed structure, moisture behavior, and fire dynamics across vegetation types (grass, shrub, timber litter, etc.). A spatially continuous representation of fuel variation improves accuracy of simulated fire perimeter growth and heat flux distribution, enabling better prediction of fire behavior in heterogeneous landscapes. Firebreak barriers represent suppression infrastructure such as fuel breaks, cleared roads, and engineered barriers that prevent fire propagation.
+
+Fuel Map File Formats
+---------------------
+
+Two file formats are supported for loading spatially varying fuel model codes:
+
+**ESRI ASCII Grid Format**
+
+This is a simple, human-readable raster format. File structure:
+
+.. code-block:: text
+
+    ncols <N>
+    nrows <N>
+    xllcorner <x>
+    yllcorner <y>
+    cellsize <dx>
+    nodata_value <val>
+    <row 1 of integer codes>
+    <row 2 of integer codes>
+    ...
+    <row N of integer codes>
+
+Header lines specify grid dimensions, geospatial coordinates, cell size, and the sentinel value for missing/invalid cells. Every reader of the code field (the rate-of-spread tables, the per-cell coefficients, the wind heights, the non-burnable mask, the hybrid and region selectors, and the initial load of ``erf.fire.fuel_map.load_from_map``) takes the nearest integer of the stored value, so they all agree on a cell's fuel (until October 2026 the load reader truncated instead). The map readers store whole numbers: an ASCII code must be a whole number ("7" or "7.0"), the ``NODATA_value`` becomes 0 (non-burnable), and a fractional, negative or non-numeric code aborts the run naming its row and column. Data rows are ordered from north (highest y-coordinate) to south (lowest y-coordinate), following the ESRI standard convention. The ERF fire reader reverses this row order internally to match fire domain coordinates (south to north), ensuring that cell (i, j) in the fire grid is correctly mapped to its corresponding fuel model code: the first data row lands on the north edge of the fire grid. Until 2026-09-11 the reader put the first data row on the south edge instead, so a map written in this convention was mirrored north to south.
+
+The map is placed by cell index, not by coordinates. It must have exactly as many columns and rows as the fire grid has cells in x and y, and the run stops with a message otherwise. The corner in the header is not used, and a ``cellsize`` different from the fire cell size is reported as a warning. For a real-terrain case, ``Exec/Tools/make_landfire_fuel_map.py`` puts a LANDFIRE fuel raster on the fire grid in this form.
+
+**FARSITE LCP Binary Format**
+
+FARSITE landscape files (.lcp) are binary rasters used in operational fire simulation; LANDFIRE provides them and GDAL writes them (``gdal_translate -of LCP``). A file is a 7316-byte header (FARSITE's ``headdata``: the crown and ground fuel flags, the extent and per-theme summaries, then the column and row counts at bytes 4164 and 4168 and the cell size at byte 4208) followed by the cells, row by row from the north edge and west to east within a row. Each cell holds its 16-bit bands in turn: elevation, slope, aspect, fuel model and canopy cover; then stand height, crown base height and crown bulk density when the crown fuel flag is 21; then duff and coarse woody fuel when the ground fuel flag is 21. The reader takes the fuel model band of every cell, turns negative (no-data) codes into 0, and places the first row on the north edge of the fire grid. The landscape must have exactly as many columns and rows as the fire grid has cells, and the run stops with a message otherwise or when the header does not describe a complete landscape. Until 2026-09-11 the reader assumed a 256-byte header and layers stored one after another, so it rejected or misread real landscape files.
+
+Reference: Finney, M.A. (1998/2004). FARSITE: Fire Area Simulator. RMRS-RP-4.
+
+Fuel Boundary Blending
+----------------------
+
+At boundaries between different fuel model zones, ROS discontinuities can produce unphysical artifacts. To mitigate this, ROS values at zone boundaries are blended toward neighboring cells with different fuel codes. The blending formula is:
+
+.. math::
+
+    \text{ROS}_{\text{blended}}(i,j) = (1-f) \, \text{ROS}_{\text{cell}}(i,j) +
+    f \, \frac{1}{n_{\text{diff}}} \sum_{\text{neighbors with different fuel code}} \text{ROS}_{\text{neighbor}}
+
+where :math:`f` is the blending fraction (default 0.0, range [0, 1]), :math:`n_{\text{diff}}` is the count of neighbors with fuel codes differing from the central cell, and neighbors are the 4-cell von Neumann stencil (±i, ±j directions). A value :math:`f=0` disables blending (sharp boundaries); :math:`f=1` fully replaces the cell ROS with the mean neighbor ROS (maximum smoothing).
+
+When a cell has no neighbors with different fuel codes, it is not modified. Blending is applied after all ROS calculations but before fire propagation, allowing smooth transitions in fire front shape and intensity across zone boundaries.
+
+Non-burnable fuel codes
+-----------------------
+
+Cells whose code is listed in :cpp:`erf.fire.fuel_map.nonburnable_codes` are
+placed in the non-burnable mask described in :ref:`sec:FirePropagation`: zero
+rate of spread, no fuel, no ember landings, and the front stops at their
+edge. The list is empty by default, and an unlisted code that is not one of
+the Anderson models falls through to fuel model 1 in the Rothermel table,
+which means the nodata value 0 burns as short grass unless it is listed.
+With the Scott and Burgan fuel system the non-burnable classes are 91 to 99.
+
+Firebreak Barriers
+------------------
+
+Firebreak barriers are non-burnable zones established at fire initialization, permanent with :cpp:`erf.fire.firebreak.use_mask = true` (the default). Two barrier types are supported:
+
+**Rectangular Barriers**
+
+A rectangular barrier is defined by x-extent [:math:`x_{\text{lo}}, x_{\text{hi}}`] and y-extent [:math:`y_{\text{lo}}, y_{\text{hi}}`]. A cell is contained within the barrier if its centre coordinates (x, y) satisfy:
+
+.. math::
+
+    x_{\text{lo}} \le x \le x_{\text{hi}} \quad \text{and} \quad y_{\text{lo}} \le y \le y_{\text{hi}}
+
+**Circular Barriers**
+
+A circular barrier is defined by centre :math:`(c_x, c_y)` and radius :math:`r`. A cell is contained within the barrier if its centre lies within the radius:
+
+.. math::
+
+    (x - c_x)^2 + (y - c_y)^2 \le r^2
+
+**Sentinel Value and Permanence**
+
+All cells within any barrier have their level-set field ``fire_phi`` stamped to the constant value ``FIREBREAK_PHI_SENTINEL = 1.0e6`` at initialization, after the ignition disc and before a t = 0 polygon or polyline ignition, which min-merges its distance over the barrier. The sentinel is greater than ``farsite_phi_threshold`` (default 0.1), so a stamped cell starts unburned on both paths. With :cpp:`erf.fire.firebreak.use_mask = true` (the default) what holds a firebreak for the whole run is the non-burnable mask described below, which marks the barrier cells from the shapes themselves, with the same cell-centre test, not from the value of the level set.
+
+Reference: Finney, M.A. (1998). FARSITE: Fire Area Simulator. RMRS-RP-4.
+
+Firebreak cells are stamped into the level set once at initialisation. On
+the FARSITE path the level set is rebuilt from the arrival time every
+subcycle and on the level-set path reinitialisation clamps the sentinel, so
+a firebreak can be burned over later in a run. With
+:cpp:`erf.fire.firebreak.use_mask = true` (the default since October 2026)
+the firebreak cells are held in the non-burnable mask as well, which holds
+on both paths. Until October 2026 the mask read them back as the cells with
+``fire_phi`` at or above half the sentinel, which found none at all when a
+t = 0 polygon or polyline ignition had merged its distance over the barrier
+(the CTest ``FireMergingFronts_firebreak_mask``). ``false`` keeps only the
+sentinel stamp, and a deck that sets it with firebreaks configured is warned
+that its firebreaks may erode; with a t = 0 polygon, polyline or scheduled
+ignition the break is gone before the first step, since that ignition's
+distance field replaces the sentinel.
+
+Input Parameters
+----------------
+
+Phase 10 adds fuel map and firebreak configuration parameters to the fire module. All parameters use the ``erf.fire.*`` prefix. Consult ``FireEngine/ERF_FireParams.H`` for default values and code documentation.
+
+.. list-table:: Spatial Fuel Map Parameters
+   :widths: 35 15 15 35
+   :header-rows: 1
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``fuel_map.file``
+     - string
+     - ""
+     - Path to fuel map file (ASCII or LCP); empty = uniform fuel (fallback to ``fuel_model_id``)
+   * - ``fuel_map.format``
+     - string
+     - "ascii"
+     - File format: "ascii" (ESRI ASCII grid) or "lcp" (FARSITE binary)
+   * - ``fuel_map.blending_fraction``
+     - Real
+     - 0.0
+     - ROS blending weight at fuel boundaries [0–1]
+
+.. list-table:: Firebreak Barrier Parameters (Indexed)
+   :widths: 35 15 15 35
+   :header-rows: 1
+
+   * - Parameter
+     - Type
+     - Default
+     - Description
+   * - ``firebreak.N.type``
+     - string
+     - —
+     - Barrier type: "rect" (rectangular) or "circle" (circular)
+   * - ``firebreak.N.x_lo``
+     - Real
+     - —
+     - Rectangle: west edge x-coordinate [m]
+   * - ``firebreak.N.x_hi``
+     - Real
+     - —
+     - Rectangle: east edge x-coordinate [m]
+   * - ``firebreak.N.y_lo``
+     - Real
+     - —
+     - Rectangle: south edge y-coordinate [m]
+   * - ``firebreak.N.y_hi``
+     - Real
+     - —
+     - Rectangle: north edge y-coordinate [m]
+   * - ``firebreak.N.cx``
+     - Real
+     - —
+     - Circle: centre x-coordinate [m]
+   * - ``firebreak.N.cy``
+     - Real
+     - —
+     - Circle: centre y-coordinate [m]
+   * - ``firebreak.N.radius``
+     - Real
+     - —
+     - Circle: radius [m]
+
+Barriers are indexed N = 0, 1, 2, ... and defined by setting at least the ``type`` key. The configuration loop stops at the first missing barrier index, allowing up to 10 barriers. Unused parameters for a given barrier type (e.g., ``cx``, ``cy``, ``radius`` for a rectangular barrier) are ignored.
+
+Output Variables
+-----------------
+
+Phase 10 adds a single new plotfile variable:
+
+- ``fire_fuel_model_code`` — per-cell fuel model code (Anderson FBFM13, 1–13) as read from the fuel map or defaulting to ``fuel_model_id``. Integer values stored as Real; includes code 0 for cells with nodata values in the input file.
+
+This variable enables verification that fuel maps were loaded correctly and visualization of fuel model spatial distribution.
+
+Limitations
+-----------
+
+- **Exact dimension match**: Fuel map grid dimensions must equal the fire grid dimensions exactly. No interpolation or regridding is performed.
+- **Permanent barriers**: Firebreak cells are stamped at initialization and remain non-burnable for the duration of the simulation. Barriers cannot evolve or be modified during the run.
+- **LCP layer extraction**: The FARSITE LCP reader extracts only the fuel model band of each cell. Elevation, aspect, slope, fuel moisture, and other LCP layers are not currently loaded.
+- **Valid fuel codes**: FBFM13 recognizes burnable fuel codes 1–13. Code 0 (nodata), code 14 and higher (out-of-range), and code -9999 (sentinel) are treated as non-burnable or invalid and default to the fallback ``fuel_model_id``.
+
+References
+----------
+
+Anderson, H.E. (1982). Aids to determining fuel models for estimating fire behavior. General Technical Report INT-122. USDA Forest Service, Intermountain Forest and Range Experiment Station.
+
+Finney, M.A. (1998). FARSITE: Fire Area Simulator—Model development and evaluation. Research Paper RMRS-RP-4, Revised 2004. USDA Forest Service, Rocky Mountain Research Station.
+
+Scott, J.H., Burgan, R.E. (2005). Standard fire behavior fuel models: A comprehensive set for use with ArcGIS. General Technical Report RMRS-GTR-153. USDA Forest Service, Rocky Mountain Research Station.
