@@ -9,16 +9,21 @@ and the fire's heat drives the wind. The code is split along that line.
 | Part | What it does | Where it lives |
 |---|---|---|
 | **Fire coupling** | The atmosphere side: where the fire grid sits, what the fire is handed each step, and how its heat, water vapour and smoke enter the atmosphere | [erf-model/ERF](https://github.com/erf-model/ERF), `Source/FireCoupling` |
-| **Fire engine** | The fire model: spreads the front and reports the heat it releases | Its own repository, outside ERF |
+| **Fire engine** | The fire model: spreads the front and reports the heat it releases | Its own repository, which holds ERF as a Git submodule |
 
 ERF contains no fire engine of its own. An engine plugs into the coupling
 through one interface, and ERF needs no change to add one.
 
+Every fire engine uses one repository layout. The engine's repository holds
+ERF as a Git submodule, pinned to an ERF release or commit, and builds its
+executable against it. The engine's cases and tests live in the engine's
+repository, not in ERF, so ERF's CI runs only ERF's own tests. FLARE and LSFIRE
+both use this layout; FLARE runs its tests in its own CI.
+
 ![What is inside each repository](docs/images/what-is-where.svg)
 
-A fire engine can also be integrated using a pinned ERF Git submodule.
-
-![How LSFIRE connects to ERF](docs/images/lsfire-integration.svg)
+A change an engine needs in ERF goes to erf-model/ERF as a pull request. The
+engine then moves its submodule to an ERF commit that contains it.
 
 ## Documentation
 
@@ -29,8 +34,9 @@ GitHub:
 
 - [Fire–Atmosphere Coupling in ERF](docs/fire-coupling-in-erf.md): the coupling
   components in ERF, how to build them, their inputs, and what an engine must provide.
-- [FLARE](docs/flare.md): the engine, and what the FLARE repository holds that is
-  not part of the engine. The FLARE model documentation and its inputs, copied
+- [FLARE](docs/flare.md): the engine, how the FLARE repository uses ERF as a
+  submodule, and what it holds besides the engine. The FLARE model documentation
+  and its inputs, copied
   from the FLARE repository, are on the published site under FLARE.
 - [LSFIRE](docs/lsfire.md): the level-set engine, its ERF adapter, repository
   layout, and coupled test cases.

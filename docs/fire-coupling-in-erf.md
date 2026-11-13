@@ -25,30 +25,77 @@ propagation schemes remain in the fire engines.
 |---|---|
 | `Source/FireCoupling` | The `FireCoupler` class, the `FireEngine` interface, the engine registry, the input parser, and helpers for the wind and ground height |
 | `Source/FireCoupling/ERF_FireEngineTemplate.H` | Annotated declarations of every engine method (reference only; not compiled into a run) |
-| `Tests/FireEngineExample` | A complete example engine, a prescribed growing disk of heat, built by CI |
-| `Tests/Unit/Fire` | Unit tests that use a stand-in engine |
 | ERF core | Hooks for start-up, time advance and source terms, the fire plotfile, and a `ScalarLayout` record in every checkpoint |
 
-## Building with fire support
+ERF holds no fire tests. The example engine (`Tests/FireEngineExample`) and the
+fire unit tests (`Tests/Unit/Fire`) moved to FLARE in erf-model/ERF#5095 by Ann
+Almgren.
 
-Fire coupling is disabled by default. When it is enabled, the state carries one
-additional passive scalar, the smoke tracer, whether or not a fire is run. Each
-checkpoint records the number of scalars, so a restart with a differently
-configured build is rejected.
+## ERF as a submodule
 
-Engines are compiled from their own directories against the same ERF source tree:
+Every fire engine uses one repository layout: the engine's repository holds ERF
+as a Git submodule and builds against it. ERF holds no fire tests, so ERF's CI
+runs ERF's tests only. The engine keeps its fire cases and tests in its own
+repository. There are two build routes within this layout, described below.
 
 ```bash
-cmake -S /path/to/ERF -B cmake-build -DERF_ENABLE_FIRE=ON \
-      -DERF_FIRE_ENGINE_DIRS="/path/to/fire-engine;/path/to/other-engine"
+git submodule add https://github.com/erf-model/ERF.git Submodules/ERF
+git submodule update --init --recursive   # also brings AMReX, through ERF
 ```
 
-With GNU make, set `ERF_HOME = /path/to/ERF`, `USE_FIRE = TRUE` and
-`FIRE_HOME = /path/to/fire-engine` before including `$(ERF_HOME)/Exec/Make.ERF`.
+Pin the submodule to an ERF release, or to a later ERF commit when the engine
+needs one. A change the engine needs in ERF goes to erf-model/ERF as a pull
+request; the engine then moves its submodule to a commit that contains it.
+
+The recommended build uses ERF as a library, `ERF::erf` (erf-model/ERF#5096 by
+Ann Almgren). The engine's repository has its own `CMakeLists.txt`, compiles its
+engine and its own problem file into its own executable, and sets that
+executable up with ERF's `erf_setup_executable`. The engine's
+`ERF_REGISTER_FIRE_ENGINE` line runs from that executable, so ERF needs no
+engine path:
+
+```cmake
+cmake_minimum_required(VERSION 3.25)
+project(MyFire CXX C)
+
+option(ERF_ENABLE_FIRE "Enable the fire coupling" ON)   # before ERF's own option()
+
+if(ERF_ENABLE_CUDA)
+  enable_language(CUDA)   # also needed here, where my_fire is defined
+endif()
+
+enable_testing()
+add_subdirectory(Submodules/ERF EXCLUDE_FROM_ALL)
+
+add_executable(my_fire Exec/ERF_Prob.cpp)
+target_include_directories(my_fire PRIVATE ${PROJECT_SOURCE_DIR}/Exec)
+set(ERF_FIRE_ENGINE_DIR "${PROJECT_SOURCE_DIR}/FireEngine")
+include("${ERF_FIRE_ENGINE_DIR}/ERFFireEngine.cmake")
+erf_fire_engine_add(my_fire)          # adds the engine's sources
+erf_setup_executable(my_fire)         # ERF's main.cpp, ERF::erf, compile and GPU flags
+```
+
+Every ERF option (`ERF_ENABLE_MPI`, `ERF_ENABLE_CUDA`, `ERF_ENABLE_NETCDF`, ...)
+is given on the engine's configure line, as for ERF itself. The section "ERF as
+a library" of ERF's
+[building page](https://erf.readthedocs.io/en/latest/buildingSystems.html) lists
+the rules, and ERF's `Tests/ParentExecutable` is a small working example. ERF's
+CTest helpers (`Tests/ERFTestHelpers.cmake`) can register the engine's own
+regression cases. FLARE's `CMakeLists.txt` follows this pattern.
+
+The second route builds ERF's own executable from the submodule and passes it
+the engine's directory (`ERF_FIRE_ENGINE_DIRS` in CMake, `FIRE_HOME` in GNU
+make). LSFIRE uses this route from its `ERF/` submodule. The engine still lives
+in its own repository.
+
+Fire coupling is disabled by default in ERF. When it is enabled, the state
+carries one additional passive scalar, the smoke tracer, whether or not a fire
+is run. Each checkpoint records the number of scalars, so a restart with a
+differently configured build is rejected.
 
 A run with `erf.fire.enable = true` stops at start-up if no engine is compiled
-in. When several engines are compiled into one executable, `erf.fire.engine`
-selects one at run time.
+in. With one engine compiled in, it is the default. When several engines are
+compiled into one executable, `erf.fire.engine` selects one at run time.
 
 ## Coupling sequence
 
@@ -135,7 +182,8 @@ offered to other surface models. An engine that keeps the default
 `read_checkpoint` stops a restarted run with an explanatory message.
 
 An engine directory contains `ERFFireEngine.cmake` for CMake and `Make.package`
-for GNU make. To start a new engine, copy `Tests/FireEngineExample` or the
-template, then follow the sections "Adding a fire engine" and "The engine
+for GNU make. To start a new engine, copy the example engine,
+[`Tests/FireEngineExample` in FLARE](https://github.com/erf-model/FLARE/tree/development/Tests/FireEngineExample),
+or ERF's template, then follow the sections "Adding a fire engine" and "The engine
 contract" in the ERF documentation, which define the rules for fluxes, water and
 GPU memory.
