@@ -5,8 +5,8 @@ and may change.
 
 | Tutorial | You will learn to | Status |
 |---|---|---|
-| 1. Build ERF with the example engine | Compile the coupling and `Tests/FireEngineExample`, run it, and find its output | To be written |
-| 2. Write your own engine | Copy the example, register a new engine, and pass the restart check | To be written |
+| 1. Build the example engine | Build FLARE's `Tests/FireEngineExample` against the ERF submodule, run it, and find its output | To be written |
+| 2. Write your own engine | Start a repository with ERF as a submodule, copy the example, register a new engine, and pass the restart check | To be written |
 | 3. Run a FLARE fire | Build FLARE, run a small coupled fire, and read its diagnostics | To be written |
 
 ## Layout of each tutorial
