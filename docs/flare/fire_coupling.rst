@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_coupling.rst at 39e777bcc by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_coupling.rst at ab9b1a193 by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. role:: cpp(code)
@@ -107,8 +107,9 @@ face-staggered velocities are averaged to cell centres and interpolated
 linearly in height between the two cell centres that bracket the target.
 A target below the first cell centre takes the lowest centre's wind scaled
 by the neutral log profile :math:`\ln(z/z_0) / \ln(z_1/z_0)` of
-:cpp:`erf.fire.wind_sample_z0` (default 0.1 m), :math:`z_1` the centre's
-height above ground, with :cpp:`erf.fire.wind_below_first_cell = "log"`;
+:cpp:`erf.fire.wind_sample_z0` (default 0.1 m; each column's own :math:`z_0`
+with :cpp:`erf.fire.wind_sample_z0_source = "surface_layer"`), :math:`z_1` the
+centre's height above ground, with :cpp:`erf.fire.wind_below_first_cell = "log"`;
 the default ``"clamp"`` takes the centre's wind unchanged (a 6.1 m target
 under a 10 m first centre reads the 10 m wind, 12 % high at :math:`z_0` =
 0.1 m), kept as the default because 112 fire decks sample below their first
@@ -137,7 +138,67 @@ sampled roof is above the cell's wind height, and the four weights are
 renormalised, so the fire reads the wind of the open columns only. A cell
 whose four columns are all closed keeps the plain weights; it is inside a
 footprint and masked anyway. Off by default; needs
-:cpp:`erf.fire.structures.enable` and has no effect with ``"nearest"``.
+:cpp:`erf.fire.structures.enable` and ``wind_interp = "bilinear"``; with
+``"nearest"``, which takes one column, the run aborts. On a fine fire level
+that covers part of the domain, the open fraction and roof height of a
+column just outside the fire region are those of the nearest column inside
+it (as at a non-periodic face of the domain); until November 2026 those
+ghost columns stayed fully open with no roof, and the heat placement of
+:cpp:`erf.fire.heat_open_fraction` read them the same way.
+
+**Roughness per column.** By default every log profile applied to the sampled
+wind uses the one roughness :cpp:`erf.fire.wind_sample_z0`. With
+:cpp:`erf.fire.wind_sample_z0_source = "surface_layer"` it uses instead the
+roughness of each atmospheric column in ERF's surface layer
+(:cpp:`erf.most.z0`, the map of :cpp:`erf.most.roughness_file_name`, or the
+value the surface layer computes: Charnock and the other sea roughness forms,
+and the roughness recovered with ``bulk_coeff`` or land-surface fluxes), the
+same :math:`z_0` the atmosphere's surface stress is computed with. The
+profiles stay neutral, with no displacement height:
+
+- the wind below the first cell centre and the two-height resampling use each
+  sampled column's own :math:`z_0`, and with ``"bilinear"`` the factor is
+  applied to each column before the four are blended;
+- the conversions of the reference wind to 20 ft (WAF) and to 10 m (FBP,
+  Cheney-Gould, Cruz) use the :math:`z_0` of the column holding the fire cell;
+- the ember drift lifts the reference wind to each brand's height with the
+  :math:`z_0` interpolated at the brand, and the 10 m wind of the lofting
+  height uses the source cell's.
+
+With ``"bilinear"``, a fire cell within one atmospheric cell of a change in
+roughness blends four columns brought to the reference height each with its own
+:math:`z_0`, and its 10 m and 20 ft conversions then use the :math:`z_0` of the
+column holding it. Across a step from 0.03 to 0.5 m, with the same wind at
+60 m over both roughnesses and a 6.1 m reference wind, this gives a 10 m wind
+up to 4 % lower on the smooth side and up to 5 % higher on the rough side than
+blending the four columns' own 10 m winds would (3 % and 4 % with four fire
+cells per atmospheric cell), and a jump of up to 10 % in the 10 m wind at the
+atmospheric cell face. With a 2 m reference wind the differences reach 16 % and
+31 %, and the jump 56 %. ``"nearest"`` has no such strip. FBP, Cheney-Gould, Cruz and the wind adjustment factor take
+an open wind: converted with a forest :math:`z_0` the 10 m and 20 ft winds are
+near-canopy winds instead.
+
+The field is copied from the surface layer at start-up and again every step, so
+a run restarted from a checkpoint samples the same :math:`z_0` as a straight
+run. Each value must be positive and at most
+:math:`\min(z_\mathrm{ref}, 6.096\ \mathrm{m})/e`, the bound
+:cpp:`erf.fire.wind_sample_z0` meets (with or without the wind adjustment
+factor), or the run stops. It needs ``zlo.type = surface_layer`` on a planar or
+terrain-fitted mesh (with EB terrain the roughness is 3D), does not apply to a
+frozen or prescribed wind, and stops a deck where no log profile is applied:
+no two-height sampling, ``"clamp"`` below the first centre, no spotting, no
+20 ft conversion (no wind adjustment factor, or a reference wind at 6.096 m,
+where the conversion is skipped) and no 10 m wind read (the 10 m wind is read
+only by FBP and Cheney-Gould with ``wind_source = reference`` and by the Cruz
+crown rate without :cpp:`erf.fire.crown.wind_10m_kmh`, and is not converted
+from a 10 m reference wind). Rothermel with the default 6.1 m reference wind
+and no sampling height is such a deck. The 20 ft conversion counts whenever
+the wind adjustment factor is on, even where the rate model reads the 10 m wind
+instead (FBP with a 10 m reference wind, Balbi with ``wind_source =
+reference``, a prescribed rate): the roughness then changes only the plotted
+``fire_wind_eff``. With ``"surface_layer"`` the scalar
+:cpp:`erf.fire.wind_sample_z0` is unused and not checked, and a deck that sets
+it gets a warning.
 
 **Adjustment to the flame zone.** ``fire_wind_eff`` is the reference wind
 multiplied by the wind adjustment factor and modified by the terrain
@@ -146,7 +207,15 @@ corrections:
 - The wind adjustment factor reduces the reference wind to the midflame
   height of the fuel bed. :cpp:`erf.fire.waf_formula = "andrews"` (default)
   uses the unsheltered logarithmic form of Andrews (2012) driven by the fuel
-  bed depth, and ``"behaviorplus"`` the linear BehavePlus form;
+  bed depth (the only form since November 2026: the linear ``"behaviorplus"``
+  form had no published source). The factor takes the 20 ft (6.1 m) open wind;
+  a reference wind sampled at another :cpp:`erf.fire.wind_ref_ht` is first
+  brought to 20 ft with the neutral log profile of :cpp:`erf.fire.wind_sample_z0`
+  (or of the column :math:`z_0`, see *Roughness per column*).
+  Andrews (2012) defines the factor on the wind 20 ft above the top of the
+  vegetation; the reference wind here is 20 ft above the ground, so for a deep
+  bed the midflame wind is a few percent low (1 % for a 1 ft bed, 9 % for a
+  6 ft bed with the Albini and Baughman profile);
   :cpp:`erf.fire.use_waf = false` passes the reference wind through. The
   depth is the domain fuel model's on a uniform fuel and each cell's own
   wherever a spatial fuel map is read, so on a map the factor is a field:
@@ -210,9 +279,11 @@ Once a cell has burned (:math:`\phi < 0`) its remaining fuel load
    \tau_{res} = \max\!\left(\frac{\Delta x_f}{R},\ \tau_{SAV}\right),
 
 where :math:`\Delta x_f / R` is the time the front takes to cross one fire
-cell and :math:`\tau_{SAV} = 301\,\rho_p/\sigma` (Rothermel 1983, seconds
-with :math:`\rho_p` in lb/ft³ and :math:`\sigma` in ft⁻¹) is the particle
-burnout time used as a floor. :cpp:`erf.fire.tau_residence_s` overrides the
+cell and :math:`\tau_{SAV} = 384/\sigma` minutes, i.e. :math:`23040/\sigma`
+seconds with :math:`\sigma` in ft⁻¹ (Anderson 1969, as written by Rothermel 1983,
+appendix C), is the flame residence time used as a floor. Until November 2026 the
+floor was :math:`301\,\rho_p/\sigma` s, which has no published source and gave
+0.42 of this value. :cpp:`erf.fire.tau_residence_s` overrides the
 residence time with a fixed value when positive.
 
 That residence time ties the burnout to the front's speed, so a cell of
@@ -461,7 +532,7 @@ check both.
 References
 ----------
 
-- Andrews, P. L. (2012). Modeling wind adjustment factor and midflame wind speed for Rothermel's surface fire spread model. USDA Forest Service General Technical Report RMRS-GTR-266.
+- Andrews, P. L. (2012). Modeling wind adjustment factor and midflame wind speed for Rothermel's surface fire spread model. USDA Forest Service General Technical Report RMRS-GTR-266. https://www.fs.usda.gov/rm/pubs/rmrs_gtr266.pdf
 - Rothermel, R. C. (1972). A mathematical model for predicting fire spread in wildland fuels. USDA Forest Service Research Paper INT-115.
 - Rothermel, R. C. (1983). How to predict the spread and intensity of forest and range fires. USDA Forest Service General Technical Report INT-143.
 - Mandel, J., Beezley, J. D. and Kochanski, A. K. (2011). Coupled atmosphere-wildland fire modeling with WRF 3.3 and SFIRE 2011. Geoscientific Model Development, 4, 591-610.

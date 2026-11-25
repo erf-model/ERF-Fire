@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/Fire.rst at 39e777bcc by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/Fire.rst at ab9b1a193 by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. role:: cpp(code)
@@ -12,7 +12,7 @@ Fire Model
 .. note::
 
    This section is copied from the `FLARE documentation <https://github.com/erf-model/FLARE/blob/development/Docs/sphinx_doc>`__ at commit
-   ``39e777bcc``. File paths such as ``FireEngine/`` and ``Exec/`` refer to the FLARE repository.
+   ``ab9b1a193``. File paths such as ``FireEngine/`` and ``Exec/`` refer to the FLARE repository.
 
 Overview
 --------
@@ -241,7 +241,7 @@ The principal state and diagnostic fields, all cell-centred on the fire grid:
      - Sensible and latent surface flux [W/m²]
    * - ``fire_fireline_intensity``, ``fire_heat_release``, ``fire_flame_length``, ``fire_flame_temp``, ``fire_flame_tilt``
      - 1 each
-     - Byram intensity :math:`h w_0 R` [kW/m], heat release :math:`h (w_0 - w) R` [kW/m], Thomas flame length [m], flame temperature [K], tilt [deg] (with ``erf.fire.compute_flame_tilt``)
+     - Byram intensity :math:`h w_0 R` [kW/m], heat release :math:`h (w_0 - w) R` [kW/m], Byram flame length [m], flame temperature [K], tilt [deg] (with ``erf.fire.compute_flame_tilt``)
    * - ``fire_ros_weight``, ``fire_structure_height``
      - 1 each
      - Hybrid model weight and sampled building height, present with the hybrid model or structures

@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_suppression.rst at 39e777bcc by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_suppression.rst at ab9b1a193 by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. role:: cpp(code)

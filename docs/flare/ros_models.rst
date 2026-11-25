@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/ros_models.rst at 39e777bcc by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/ros_models.rst at ab9b1a193 by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 
@@ -17,7 +17,7 @@ FLARE provides seven rate-of-spread models and a per-cell hybrid of two of them,
 
 Sub-phase A adds per-fuel wind extraction height following WRF-SFIRE :cpp:`fcwh` convention. This is controlled by the :cpp:`erf.fire.use_per_fuel_wind_ht` parameter and is backward-compatible with the global wind reference height approach.
 
-The wind can also be sampled above the flames and brought down to the target height, the second interpolation option of the Community Fire Behavior Model (Jiménez y Muñoz et al., 2026), meant to drive the fire with an ambient wind rather than one already accelerated by its own plume. With :cpp:`erf.fire.wind_sample_ht` :math:`= z_s > 0` every atmospheric column is sampled at :math:`z_s` above its own ground and the result is scaled with a neutral log profile of roughness :cpp:`erf.fire.wind_sample_z0` :math:`= z_0`,
+The wind can also be sampled above the flames and brought down to the target height, the second interpolation option of the Community Fire Behavior Model (Jiménez y Muñoz et al., 2026), meant to drive the fire with an ambient wind rather than one already accelerated by its own plume. With :cpp:`erf.fire.wind_sample_ht` :math:`= z_s > 0` every atmospheric column is sampled at :math:`z_s` above its own ground and the result is scaled with a neutral log profile of roughness :cpp:`erf.fire.wind_sample_z0` :math:`= z_0` (each column's surface-layer :math:`z_0` with :cpp:`erf.fire.wind_sample_z0_source = "surface_layer"`),
 
 .. math::
 
@@ -361,7 +361,8 @@ The distinction matters because the WAF is a Rothermel construct: it reduces the
    * - :cpp:`erf.fire.balbi.wind_source`
      - "midflame"
      - -
-     - Wind consumed: "midflame" or "reference"
+     - Wind consumed: "midflame" or "reference"; needs the Balbi rate
+       (ros_model or a hybrid member)
    * - :cpp:`erf.fire.balbi.heat_flux_coupling`
      - false
      - -
@@ -413,7 +414,9 @@ floored at zero, and the curing coefficient of the degree of curing
 (:cpp:`erf.fire.cheney_gould.curing_curve = "cruz2015"`, default), or the
 1998 paper's :math:`\phi_C = 1.12 / (1 + 59.2\, e^{-0.124 (C - 50)})`
 (``"cheney1998"``). The model reads the reference wind of
-:cpp:`erf.fire.wind_ref_ht` as its open wind, so set that height to 10 m;
+:cpp:`erf.fire.wind_ref_ht` brought to 10 m with the neutral log profile of
+:cpp:`erf.fire.wind_sample_z0` (until November 2026 it read the 6.1 m wind as
+its 10 m wind, 11 % low over :math:`z_0 = 0.1` m);
 :cpp:`erf.fire.cheney_gould.wind_source = "midflame"` hands it the
 WAF-reduced midflame wind instead. A backing (negative) wind component is
 treated as calm. At 20 km/h, 6 % moisture and full curing the model gives
@@ -462,7 +465,7 @@ written out independently.
    * - :cpp:`erf.fire.cheney_gould.wind_source`
      - "reference"
      - -
-     - "reference" (the wind at wind_ref_ht, the model's U10) or "midflame"
+     - "reference" (the wind at wind_ref_ht brought to 10 m, the model's U10) or "midflame"
 
 **References:**
 
@@ -831,9 +834,9 @@ the ISI it implies and that to an equivalent wind, added to the wind before
 the ISI is formed. On the level-set path with :cpp:`erf.fire.directional_ros`
 the wind and slope along the front normal are used, so head, flank and
 backing rates follow from the system. The indices are daily inputs, uniform
-over the domain; the wind is the reference-height wind
-(:cpp:`erf.fire.fbp.wind_source = "reference"`, so set
-:cpp:`erf.fire.wind_ref_ht` to 10 m) or the midflame wind. C6 is given its
+over the domain; the wind is the reference-height wind brought to 10 m with the
+neutral log profile of :cpp:`erf.fire.wind_sample_z0`
+(:cpp:`erf.fire.fbp.wind_source = "reference"`) or the midflame wind. C6 is given its
 surface rate only. ``Exec/RegTests/FireFbp`` checks the head rate against an
 independent implementation of the equations and the unit test
 ``ERF_GTestFbp`` their invariants.
@@ -941,7 +944,7 @@ the whole grid by one factor that the raster could not change. Wherever a
 fuel map is read the factor now comes from the cell's own bed depth, whatever
 rate-of-spread model is in use, and the rate of spread carries it.
 
-The Byram fireline intensity and the Thomas flame length that follows it
+The Byram fireline intensity and the Byram (1959) flame length that follows it
 likewise come from the cell's own model: the heat content wherever a map is
 read, and, under :cpp:`erf.fire.fuel_map.load_from_map`, the initial load
 each cell was started with. Byram's :math:`I_B = h\,(w_0 - w)\,R` differences

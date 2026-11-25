@@ -12,13 +12,19 @@ What it copies:
 * ``Docs/sphinx_doc/theory/Fire.rst`` and every page in its toctree;
 * the Fire Model section of ``Docs/sphinx_doc/Inputs.rst`` (from the
   ``sec:FireInputs`` label to the next ``sec:`` label) as ``inputs.rst``;
+* the fire-and-transmission-line pages listed in ``LINE_PAGES``: the
+  benchmark of a fire under a line, the conductor and tower models, the
+  conductor inputs and the MoorDyn build page;
 * every figure those pages use, into ``docs/flare/figures/``.
 
 What it changes in the copy:
 
 * a comment naming the source file and commit at the top of each page, and a
-  note with the commit under the title of ``Fire.rst``;
+  note with the commit under the title of ``Fire.rst`` and of each page in
+  ``LINE_PAGES``;
 * figure paths, to ``figures/<name>``;
+* a ``:doc:`` to a copied page, to that page's name (all copies sit in one
+  folder); a ``:doc:`` to any other FLARE page, to a link to its source;
 * the inputs page title, to "Fire Model Inputs";
 * a ``:ref:`` to a label that is neither in the copied pages nor in the ERF
   documentation (resolved by intersphinx, see docs/conf.py) becomes a link to
@@ -32,6 +38,7 @@ would write, without writing anything.
 import argparse
 import filecmp
 import io
+import os
 import re
 import shutil
 import subprocess
@@ -49,7 +56,20 @@ ERF_INV = "https://erf.readthedocs.io/en/latest/objects.inv"
 
 LABEL_RE = re.compile(r"^\.\. _([^\n]+):\s*$", re.M)
 REF_RE = re.compile(r":ref:`([^`<]*?)(?:\s*<([^>`]+)>)?`")
-FIG_RE = re.compile(r"^(\.\. (?:figure|image)::\s*)\.\./figures/(\S+)", re.M)
+FIG_RE = re.compile(r"^(\.\. (?:figure|image)::\s*)(?:\.\./)?figures/(\S+)", re.M)
+DOC_RE = re.compile(r":doc:`([^`<]*?)(?:\s*<([^>`]+)>)?`")
+TITLE_RE = re.compile(r"\n([^\n]+)\n(=+)\n")
+
+# Pages copied besides Fire.rst and its toctree: name -> path under DOCS.
+# ERF's own pages that these refer to (sec:StructureCoupling, sec:RANS, ...)
+# are not copied; their :ref: resolves against the ERF documentation.
+LINE_PAGES = {
+    "FireUnderLine": "FireUnderLine.rst",
+    "Conductors": "theory/Conductors.rst",
+    "TowerFrame": "theory/TowerFrame.rst",
+    "ConductorInputs": "ConductorInputs.rst",
+    "CouplingToMoorDyn": "CouplingToMoorDyn.rst",
+}
 
 
 def git(repo, *args):
@@ -127,6 +147,11 @@ def build(repo, ref, dest):
         pages[name] = (path, show(repo, ref, path))
     pages["inputs"] = (f"{DOCS}/Inputs.rst",
                        extract_inputs(show(repo, ref, f"{DOCS}/Inputs.rst")))
+    for name, path in LINE_PAGES.items():
+        if name in pages:
+            sys.exit(f"sync_flare_docs: page name '{name}' is copied twice")
+        pages[name] = (f"{DOCS}/{path}", show(repo, ref, f"{DOCS}/{path}"))
+    by_path = {path: name for name, (path, _) in pages.items()}
 
     local = set()
     for _, text in pages.values():
@@ -145,11 +170,34 @@ def build(repo, ref, dest):
         text = title if target else label
         return f"`{text} <{FLARE_URL}/{flare[key]}>`__"
 
+    def doc_fixer(page_path):
+        here = page_path.rsplit("/", 1)[0]
+
+        def fix_doc(m):
+            title, target = m.group(1).strip(), m.group(2)
+            doc = (target or title).strip()
+            if doc.startswith("/"):
+                src = f"{DOCS}{doc}.rst"
+            else:
+                src = str(Path(here) / f"{doc}.rst")
+            src = os.path.normpath(src)
+            if src in by_path:
+                return (f":doc:`{title} <{by_path[src]}>`" if target
+                        else f":doc:`{by_path[src]}`")
+            if src not in flare_files:
+                sys.exit(f"sync_flare_docs: :doc: target '{doc}' in {page_path} "
+                         "is not a FLARE page")
+            return f"`{title if target else doc} <{FLARE_URL}/{src}>`__"
+        return fix_doc
+
+    flare_files = set(git(repo, "ls-tree", "-r", "--name-only", ref,
+                          DOCS).decode().split())
     figures = set()
     for name, (path, text) in pages.items():
         figures.update(f for _, f in FIG_RE.findall(text))
         text = FIG_RE.sub(r"\1figures/\2", text)
         text = REF_RE.sub(fix_ref, text)
+        text = DOC_RE.sub(doc_fixer(path), text)
         head = (f".. Copied from erf-model/FLARE {path} at {sha} by\n"
                 f".. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.\n\n")
         if name == "Fire":
@@ -159,6 +207,14 @@ def build(repo, ref, dest):
                           f"   ``{sha}``. File paths such as ``FireEngine/`` and "
                           "``Exec/`` refer to the FLARE repository.\n",
                           text, count=1)
+        elif name in LINE_PAGES:
+            m = TITLE_RE.search(text)
+            if not m or len(m.group(2)) < len(m.group(1)):
+                sys.exit(f"sync_flare_docs: no page title found in {path}")
+            text = (text[:m.end()] + "\n.. note::\n\n   This page is copied from the "
+                    f"`FLARE documentation <{FLARE_URL}/{path}>`__ at commit\n"
+                    f"   ``{sha}``. File paths such as ``Structures/`` and "
+                    "``Exec/`` refer to the FLARE repository.\n" + text[m.end():])
         (dest / f"{name}.rst").write_text(head + text)
     if figures:
         (dest / "figures").mkdir()
