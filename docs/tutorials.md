@@ -9,6 +9,21 @@ and may change.
 | 2. Write your own engine | Start a repository with ERF as a submodule, copy the example, register a new engine, and pass the restart check | To be written |
 | 3. Run a FLARE fire | Build FLARE, run a small coupled fire, and read its diagnostics | To be written |
 
+## Cases you can run now
+
+Until the tutorials are written, these FLARE cases each have a README with the
+setup, the commands and the expected results.
+
+| Case in FLARE | What it shows | Kind |
+|---|---|---|
+| [`Structures/Exec/FireUnderLine`](https://github.com/erf-model/FLARE/tree/development/Structures/Exec/FireUnderLine) | A grass fire under three spans of conductor on two lattice towers, run with and without the fire's heat in the air; conductor and tower steel temperatures and the conductor sag. See [Fire and Transmission Lines](fire-and-transmission-lines.md). | Benchmark, with a CTest |
+| [`Exec/CanonicalTests/Fire/Real_Terrain/Marshall_Fire`](https://github.com/erf-model/FLARE/tree/development/Exec/CanonicalTests/Fire/Real_Terrain/Marshall_Fire) | The 30 December 2021 Marshall Fire region: 25.6 km of SRTM1 terrain, a 35 m/s westerly, three ignitions and spotting. Scripts load the LANDFIRE fuel map and print HRRR winds for the event. | Demonstration: idealised wind, one fuel model, fire does not feed back on the air |
+| [`Exec/CanonicalTests/Fire/Real_Terrain/Palisades_Fire`](https://github.com/erf-model/FLARE/tree/development/Exec/CanonicalTests/Fire/Real_Terrain/Palisades_Fire) | The 7 January 2025 Palisades Fire region: 24 km of SRTM1 terrain, a 30 m fire grid with its own elevation model under a 300 m atmosphere, chaparral to the shoreline, two-way coupling. | Demonstration: idealised wind, one fuel model |
+
+The two real-terrain cases use public SRTM1 elevation data from NASA and the
+USGS. They are not reconstructions of the events: neither is compared with the
+observed fire perimeters.
+
 ## Layout of each tutorial
 
 Each tutorial will have its own page, `docs/tutorial_<name>.md`, with these

@@ -38,9 +38,14 @@ GitHub:
   submodule, and what it holds besides the engine. The FLARE model documentation
   and its inputs, copied
   from the FLARE repository, are on the published site under FLARE.
+- [Fire and Transmission Lines](docs/fire-and-transmission-lines.md): FLARE's
+  conductor and tower models, how they couple to the fire, and the benchmark of
+  a grass fire under a line. The model pages, copied from FLARE, are on the
+  published site.
 - [LSFIRE](docs/lsfire.md): the level-set engine, its ERF adapter, repository
   layout, and coupled test cases.
-- [Tutorials](docs/tutorials.md): placeholder; the tutorials are not written yet.
+- [Tutorials](docs/tutorials.md): the tutorials are not written yet; the page
+  lists the FLARE cases that can be run now.
 
 To build the pages locally:
 

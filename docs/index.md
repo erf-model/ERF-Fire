@@ -9,6 +9,7 @@
 
 fire-coupling-in-erf
 flare
+fire-and-transmission-lines
 lsfire
 tutorials
 ```
