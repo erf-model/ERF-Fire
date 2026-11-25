@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/FireUnderLine.rst at ab9b1a193 by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/FireUnderLine.rst at 05c65505d by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. _sec:FireUnderLine:
@@ -9,7 +9,7 @@ Benchmark: a grass fire under a transmission line
 .. note::
 
    This page is copied from the `FLARE documentation <https://github.com/erf-model/FLARE/blob/development/Docs/sphinx_doc/FireUnderLine.rst>`__ at commit
-   ``ab9b1a193``. File paths such as ``Structures/`` and ``Exec/`` refer to the FLARE repository.
+   ``05c65505d``. File paths such as ``Structures/`` and ``Exec/`` refer to the FLARE repository.
 
 This page describes a benchmark of the fire-to-structures coupling: a grass fire that runs under a
 transmission line, with the conductors' and the towers' temperatures followed through the fire's passage.

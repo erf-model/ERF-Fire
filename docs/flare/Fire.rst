@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/Fire.rst at ab9b1a193 by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/Fire.rst at 05c65505d by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. role:: cpp(code)
@@ -12,7 +12,7 @@ Fire Model
 .. note::
 
    This section is copied from the `FLARE documentation <https://github.com/erf-model/FLARE/blob/development/Docs/sphinx_doc>`__ at commit
-   ``ab9b1a193``. File paths such as ``FireEngine/`` and ``Exec/`` refer to the FLARE repository.
+   ``05c65505d``. File paths such as ``FireEngine/`` and ``Exec/`` refer to the FLARE repository.
 
 Overview
 --------

@@ -1,4 +1,4 @@
-.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_spotting_crown.rst at ab9b1a193 by
+.. Copied from erf-model/FLARE Docs/sphinx_doc/theory/fire_spotting_crown.rst at 05c65505d by
 .. tools/sync_flare_docs.py. Edit the page in FLARE, then rerun the script.
 
 .. role:: cpp(code)
